@@ -23,7 +23,6 @@ st.set_page_config(
 # ──────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-  /* ── header banner ── */
   .main-banner {
     background: linear-gradient(135deg, #1A73E8 0%, #0D47A1 100%);
     color: white;
@@ -34,8 +33,6 @@ st.markdown("""
   }
   .main-banner h1 { margin: 0; font-size: 2rem; }
   .main-banner p  { margin: 6px 0 0; opacity: .85; font-size: 1rem; }
-
-  /* ── feature cards ── */
   .feat-card {
     background: #f8f9fa;
     border-radius: 12px;
@@ -45,13 +42,6 @@ st.markdown("""
   }
   .feat-card h3 { margin: 0 0 8px; }
   .feat-card p  { margin: 0; font-size: .9rem; color: #555; }
-
-  /* ── signal colours ── */
-  .bull  { color: #28a745 !important; font-weight: 700; }
-  .bear  { color: #dc3545 !important; font-weight: 700; }
-  .watch { color: #fd7e14 !important; font-weight: 700; }
-
-  /* ── sidebar refinements ── */
   section[data-testid="stSidebar"] .stButton > button {
     width: 100%;
     border-radius: 8px;
@@ -64,10 +54,9 @@ st.markdown("""
 # Helpers
 # ──────────────────────────────────────────────────────────────────
 def is_market_open() -> bool:
-    """True if NSE market is currently open (IST 09:15–15:30, Mon–Fri)."""
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
-    if now.weekday() >= 5:          # Saturday / Sunday
+    if now.weekday() >= 5:
         return False
     t = now.time()
     from datetime import time as dt_time
@@ -101,7 +90,6 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    # ── Connection UI ────────────────────────────────────────────
     if not st.session_state.connected:
         st.markdown("### 🔑 Login")
         if st.button("🔴 CONNECT TO ANGEL ONE", use_container_width=True,
@@ -109,9 +97,9 @@ with st.sidebar:
             with st.spinner("Connecting to Angel One…"):
                 obj, user = connect_angel_one()
                 if obj:
-                    st.session_state.angel_obj   = obj
-                    st.session_state.user_data   = user
-                    st.session_state.connected   = True
+                    st.session_state.angel_obj  = obj
+                    st.session_state.user_data  = user
+                    st.session_state.connected  = True
                     st.rerun()
     else:
         user = st.session_state.user_data or {}
@@ -126,10 +114,11 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**🗂 Navigation**")
-    st.page_link("pages/1_📊_Dashboard.py",    label="📊  Dashboard")
-    st.page_link("pages/2_📋_Watchlist.py",    label="📋  Watchlist")
-    st.page_link("pages/3_🧠_Signals.py",      label="🧠  Signals")
-    st.page_link("pages/4_🏭_Sector_Trends.py",label="🏭  Sector Trends")
+    # ✅ FIXED: plain filenames — no emoji in path
+    st.page_link("pages/1_Dashboard.py",      label="📊  Dashboard")
+    st.page_link("pages/2_Watchlist.py",      label="📋  Watchlist")
+    st.page_link("pages/3_Signals.py",        label="🧠  Signals")
+    st.page_link("pages/4_Sector_Trends.py",  label="🏭  Sector Trends")
 
     st.markdown("---")
     st.caption("Built with Angel One SmartAPI + Streamlit")
@@ -145,7 +134,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Feature cards
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.markdown("""<div class="feat-card">
@@ -184,15 +172,11 @@ if not st.session_state.connected:
         icon="🔑"
     )
 else:
-    st.success(
-        "✅ Connected! Use the sidebar links or the cards below to navigate.",
-        icon="🚀"
-    )
-
+    st.success("✅ Connected! Use the sidebar links to navigate.", icon="🚀")
     st.markdown("### Quick Stats")
     qs1, qs2, qs3 = st.columns(3)
-    wl = st.session_state.get('watchlist_data')
+    wl  = st.session_state.get('watchlist_data')
     sig = st.session_state.get('signals_data')
     qs1.metric("Stocks in DB", "500")
-    qs2.metric("Watchlist", len(wl) if wl is not None else "—")
-    qs3.metric("Signals", len(sig) if sig is not None else "—")
+    qs2.metric("Watchlist",    len(wl)  if wl  is not None else "—")
+    qs3.metric("Signals",      len(sig) if sig is not None else "—")
