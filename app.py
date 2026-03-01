@@ -1,5 +1,5 @@
 import streamlit as st
-from smartapi import SmartConnect
+from SmartApi import SmartConnect
 import pyotp
 
 st.set_page_config(page_title="Angel Mobile", layout="centered")
@@ -32,3 +32,4 @@ if st.button("🔴 CONNECT TO ANGEL ONE"):
 
     except Exception as e:
         st.error(f"Error: {e}")
+
