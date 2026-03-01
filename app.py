@@ -18,18 +18,34 @@ if st.button("🔴 CONNECT TO ANGEL ONE"):
         obj = SmartConnect(api_key=api_key)
         totp = pyotp.TOTP(totp_key).now()
         data = obj.generateSession(client_id, password, totp)
-        
+
         if data['status']:
-            st.success(f"✅ Login Successful! User: {data['data']['clientName']}")
-            
-            # Fetch Price
+            # ✅ FIXED: Safely get clientName (key name varies by API version)
+            user_data = data.get('data', {})
+            client_name = (
+                user_data.get('clientName') or
+                user_data.get('name') or
+                user_data.get('client_name') or
+                client_id  # fallback to client ID if name not found
+            )
+
+            st.success(f"✅ Login Successful! User: {client_name}")
+            st.session_state['obj'] = obj  # Save session
+
+            # Fetch SBI Live Price
             ltp = obj.ltpData("NSE", "SBIN-EQ", "3045")
-            price = ltp['data']['ltp']
-            st.metric(label="SBI LIVE PRICE", value=f"₹ {price}")
-            
+
+            if ltp and ltp.get('data'):
+                price = ltp['data']['ltp']
+                st.metric(label="SBI LIVE PRICE", value=f"₹ {price}")
+            else:
+                st.warning("⚠️ Could not fetch live price. Check symbol/token.")
+
         else:
-            st.error(f"Login Failed: {data['message']}")
+            st.error(f"❌ Login Failed: {data.get('message', 'Unknown error')}")
 
+    except KeyError as e:
+        st.error(f"❌ Missing secret key: {e} — Check your Streamlit Secrets settings")
     except Exception as e:
-        st.error(f"Error: {e}")
-
+        st.error(f"❌ Error: {e}")
+        st.info("💡 Debug info: Check your API_KEY, CLIENT_ID, PASSWORD, TOTP_KEY in secrets")
