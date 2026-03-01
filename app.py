@@ -8,9 +8,6 @@ import pytz
 
 from utils.angel_connect import connect_angel_one
 
-# ──────────────────────────────────────────────────────────────────
-# Page Config
-# ──────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Angel One Trading Dashboard",
     page_icon="📊",
@@ -18,9 +15,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ──────────────────────────────────────────────────────────────────
-# Global CSS
-# ──────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
   .main-banner {
@@ -50,17 +44,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ──────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────
 def is_market_open() -> bool:
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
     if now.weekday() >= 5:
         return False
-    t = now.time()
     from datetime import time as dt_time
-    return dt_time(9, 15) <= t <= dt_time(15, 30)
+    return dt_time(9, 15) <= now.time() <= dt_time(15, 30)
 
 
 def format_dt() -> str:
@@ -68,38 +58,34 @@ def format_dt() -> str:
     return datetime.now(ist).strftime('%d %b %Y  %H:%M IST')
 
 
-# ──────────────────────────────────────────────────────────────────
-# Session-State Initialisation
-# ──────────────────────────────────────────────────────────────────
 for key in ['connected', 'angel_obj', 'user_data']:
     if key not in st.session_state:
         st.session_state[key] = False if key == 'connected' else None
 
 
-# ──────────────────────────────────────────────────────────────────
-# Sidebar — Login Panel
-# ──────────────────────────────────────────────────────────────────
+# ── Sidebar ────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 📊 Angel One Trading")
     st.caption(format_dt())
     st.markdown("---")
 
     mkt_open = is_market_open()
-    st.markdown(
-        f"{'🟢 **MARKET OPEN**' if mkt_open else '🔴 **MARKET CLOSED**'}"
-    )
+    if mkt_open:
+        st.success("🟢 MARKET OPEN")
+    else:
+        st.error("🔴 MARKET CLOSED")
+
     st.markdown("---")
 
     if not st.session_state.connected:
         st.markdown("### 🔑 Login")
-        if st.button("🔴 CONNECT TO ANGEL ONE", use_container_width=True,
-                     type="primary"):
+        if st.button("🔴 CONNECT TO ANGEL ONE", use_container_width=True, type="primary"):
             with st.spinner("Connecting to Angel One…"):
                 obj, user = connect_angel_one()
                 if obj:
-                    st.session_state.angel_obj  = obj
-                    st.session_state.user_data  = user
-                    st.session_state.connected  = True
+                    st.session_state.angel_obj = obj
+                    st.session_state.user_data = user
+                    st.session_state.connected = True
                     st.rerun()
     else:
         user = st.session_state.user_data or {}
@@ -113,20 +99,19 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
+    # ✅ Navigation via markdown — NO st.page_link (broken on Streamlit Cloud)
     st.markdown("**🗂 Navigation**")
-    # ✅ FIXED: plain filenames — no emoji in path
-    st.page_link("pages/1_Dashboard.py",      label="📊  Dashboard")
-    st.page_link("pages/2_Watchlist.py",      label="📋  Watchlist")
-    st.page_link("pages/3_Signals.py",        label="🧠  Signals")
-    st.page_link("pages/4_Sector_Trends.py",  label="🏭  Sector Trends")
-
+    st.markdown("""
+- 📊 [Dashboard](./1_Dashboard)
+- 📋 [Watchlist](./2_Watchlist)
+- 🧠 [Signals](./3_Signals)
+- 🏭 [Sector Trends](./4_Sector_Trends)
+""")
     st.markdown("---")
     st.caption("Built with Angel One SmartAPI + Streamlit")
 
 
-# ──────────────────────────────────────────────────────────────────
-# Home Page Content
-# ──────────────────────────────────────────────────────────────────
+# ── Home Page ──────────────────────────────────────────────────────
 st.markdown("""
 <div class="main-banner">
   <h1>🚀 Angel One Trading Dashboard</h1>
@@ -167,12 +152,9 @@ with c4:
 st.markdown("<br>", unsafe_allow_html=True)
 
 if not st.session_state.connected:
-    st.warning(
-        "👈 **Connect to Angel One** using the sidebar button to unlock all pages.",
-        icon="🔑"
-    )
+    st.warning("👈 **Connect to Angel One** using the sidebar button to start.", icon="🔑")
 else:
-    st.success("✅ Connected! Use the sidebar links to navigate.", icon="🚀")
+    st.success("✅ Connected! Use the **sidebar** to navigate between pages.", icon="🚀")
     st.markdown("### Quick Stats")
     qs1, qs2, qs3 = st.columns(3)
     wl  = st.session_state.get('watchlist_data')
