@@ -1,9 +1,8 @@
-streamlit>=1.32.0
+streamlit
 smartapi-python
 pyotp
 logzero
-pandas
-numpy
+websocket-client
 requests
+pandas
 pytz
-openpyxl
