@@ -48,7 +48,9 @@ with col_info:
         st.info(f"📦 Last run: **{cached_time}** — data saved. Click to refresh.")
 
 def get_universe():
-    wl = st.session_state.get("watchlist_data") or data_store.load("watchlist_df")
+    wl = st.session_state.get("watchlist_data")
+    if wl is None or not isinstance(wl, pd.DataFrame) or wl.empty:
+        wl = data_store.load("watchlist_df")
     if use_wl and wl is not None and not wl.empty:
         rows = []
         for _, r in wl.iterrows():
@@ -150,7 +152,9 @@ if run_btn:
     st.success(f"✅ Analysis done at {ts}")
 
 # ── Display ───────────────────────────────────────────────────────
-df  = st.session_state.get("signals_data") or cached_df
+df = st.session_state.get("signals_data")
+if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+    df = cached_df
 meta = cached_meta or {}
 
 if df is None or (isinstance(df, pd.DataFrame) and df.empty):

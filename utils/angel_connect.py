@@ -127,3 +127,40 @@ def fetch_index_history(obj, index_name, days=45):
     if not info:
         return []
     return fetch_historical_ohlc(obj, info['token'], info['exchange'], days)
+
+
+def fetch_live_52w(obj, token, exchange='NSE', days=365):
+    """
+    Fetch 52W High, 52W Low, and 20-day avg volume LIVE from Angel One.
+    Returns dict: {w52_high, w52_low, avg_vol_20d, ref_volume}
+    """
+    from datetime import datetime, timedelta
+    end   = datetime.now()
+    start = end - timedelta(days=days)
+    param = {
+        "exchange":    exchange,
+        "symboltoken": token,
+        "interval":    "ONE_DAY",
+        "fromdate":    start.strftime("%Y-%m-%d 09:15"),
+        "todate":      end.strftime("%Y-%m-%d 15:30"),
+    }
+    try:
+        resp = obj.getCandleData(param)
+        if not resp or not resp.get('data'):
+            return {}
+        candles = resp['data']
+        highs  = [float(c[2]) for c in candles if c[2]]
+        lows   = [float(c[3]) for c in candles if c[3]]
+        vols   = [int(c[5])   for c in candles if c[5]]
+        w52_high = round(max(highs), 2) if highs else 0
+        w52_low  = round(min(lows),  2) if lows  else 0
+        ref_vol  = vols[-1] if vols else 0
+        avg_vol  = round(sum(vols[-20:]) / min(len(vols[-20:]), 20), 0) if vols else 0
+        return {
+            'w52_high':    w52_high,
+            'w52_low':     w52_low,
+            'ref_volume':  ref_vol,
+            'avg_vol_20d': avg_vol,
+        }
+    except Exception:
+        return {}
