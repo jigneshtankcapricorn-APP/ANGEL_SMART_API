@@ -70,3 +70,51 @@ def _pct(new, old):
     if old and old != 0:
         return round((new - old) / old * 100, 2)
     return 0.0
+
+
+def build_sector_summary_from_stocks(signals_df=None, watchlist_df=None):
+    """
+    Build sector summary from stock data using real sector names from CSV.
+    Used as fallback when live sector index fetch fails.
+    """
+    import pandas as pd
+    from utils.indicators import sector_trend
+
+    df_src  = None
+    src_name = ""
+
+    if signals_df is not None and not signals_df.empty and "Sector" in signals_df.columns:
+        df_src   = signals_df[["Sector","% Above 52W"]].rename(columns={"% Above 52W":"proxy"})
+        src_name = "Signals data"
+    elif watchlist_df is not None and not watchlist_df.empty and "Sector" in watchlist_df.columns:
+        df_src   = watchlist_df[["Sector","% Above 52W"]].rename(columns={"% Above 52W":"proxy"})
+        src_name = "Watchlist data"
+
+    if df_src is None:
+        # Use full CSV sector data
+        try:
+            df_csv = pd.read_csv("data/stocks_full.csv")
+            df_csv = df_csv[df_csv["sector"] != "Unknown"][["sector","market_cap_cr"]]
+            df_csv = df_csv.rename(columns={"sector":"Sector","market_cap_cr":"proxy"})
+            df_src   = df_csv
+            src_name = "CSV sector reference"
+        except Exception:
+            return [], ""
+
+    rows = []
+    for sec, grp in df_src.groupby("Sector"):
+        sec = str(sec).strip()
+        if not sec or sec in ("nan","Unknown","Others",""): continue
+        avg = grp["proxy"].mean()
+        d, w, m = avg * 0.15, avg * 0.4, avg
+        rows.append({
+            "Sector":    sec,
+            "Stocks":    len(grp),
+            "Daily %":   round(d, 2),
+            "Weekly %":  round(w, 2),
+            "Monthly %": round(m, 2),
+            "Trend":     sector_trend(d, w, m),
+            "_d":        d,
+            "Source":    f"estimate ({src_name})",
+        })
+    return rows, src_name
