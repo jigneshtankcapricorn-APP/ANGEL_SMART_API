@@ -6,7 +6,7 @@ import pytz
 
 st.set_page_config(page_title="🧠 Signals", page_icon="🧠", layout="wide")
 
-from utils.sidebar import render_sidebar, require_app_login
+from utils.sidebar import render_sidebar, require_app_login, check_session_alive
 from utils import data_store
 
 require_app_login()
@@ -122,6 +122,10 @@ def get_universe():
 
 # ── Run analysis ──────────────────────────────────────────────────
 if run_btn:
+    # Auto-reconnect if session dropped (phone locked, app switched, etc.)
+    if not check_session_alive():
+        st.error("❌ Angel One session expired and could not reconnect. Please use 🔄 Reconnect in sidebar.")
+        st.stop()
     universe = get_universe()
     if universe.empty:
         st.warning("Build your **Watchlist** first, or uncheck 'Use Watchlist stocks only'.")

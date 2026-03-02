@@ -164,3 +164,28 @@ def fetch_live_52w(obj, token, exchange='NSE', days=365):
         }
     except Exception:
         return {}
+
+
+def refresh_session(obj, user_data):
+    """
+    Attempt to refresh an existing Angel One session token.
+    Returns (new_obj, new_user_data) or (None, None) on failure.
+    """
+    try:
+        from SmartApi import SmartConnect
+        import pyotp
+        import streamlit as st
+
+        refresh_token = (user_data or {}).get("refreshToken", "")
+        if not refresh_token:
+            return connect_angel_one()
+
+        api_key = st.secrets["API_KEY"]
+        obj2 = SmartConnect(api_key=api_key)
+        resp = obj2.generateToken(refresh_token)
+        if resp and resp.get("status"):
+            return obj2, resp.get("data", {})
+    except Exception:
+        pass
+    # Fallback: full re-login
+    return connect_angel_one()

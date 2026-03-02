@@ -4,7 +4,7 @@ import pytz
 
 st.set_page_config(page_title="📊 Dashboard", page_icon="📊", layout="wide")
 
-from utils.sidebar import render_sidebar, require_app_login, market_open
+from utils.sidebar import render_sidebar, require_app_login, market_open, check_session_alive
 require_app_login()
 render_sidebar()
 

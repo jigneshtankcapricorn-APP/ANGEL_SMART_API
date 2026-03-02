@@ -6,7 +6,7 @@ import pytz
 
 st.set_page_config(page_title="📋 Watchlist", page_icon="📋", layout="wide")
 
-from utils.sidebar import render_sidebar, require_app_login
+from utils.sidebar import render_sidebar, require_app_login, check_session_alive
 from utils import data_store
 
 require_app_login()
@@ -205,6 +205,10 @@ def get_status(pct):
 # FETCH LIVE
 # ─────────────────────────────────────────────────────────────────
 if run_btn:
+    # Auto-reconnect if session dropped (phone locked, app switched, etc.)
+    if not check_session_alive():
+        st.error("❌ Angel One session expired and could not reconnect. Please use 🔄 Reconnect in sidebar.")
+        st.stop()
     obj         = st.session_state.angel_obj
     instruments = load_instrument_master()
 
