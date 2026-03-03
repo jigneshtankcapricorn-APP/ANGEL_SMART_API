@@ -15,6 +15,7 @@ render_sidebar()
 
 from utils.angel_connect import load_instrument_master, get_token, fetch_ltp, fetch_live_52w
 from utils.indicators import compute_vol_ratio
+from utils.sector_map import get_main_sector
 
 # ─────────────────────────────────────────────────────────────────
 # FILE PATHS
@@ -332,15 +333,17 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**🏭 Sector Filter**")
-    all_sectors = sorted([
-        s for s in df_calc["sector"].dropna().unique()
-        if s and s.strip() not in ("Unknown", "")
+    # BUG FIX: Map 821 sub-sectors → ~20 main sectors for a usable filter
+    df_calc["main_sector"] = df_calc["sector"].apply(get_main_sector)
+    all_main_sectors = sorted([
+        s for s in df_calc["main_sector"].dropna().unique()
+        if s and s.strip() not in ("Unknown", "Other", "")
     ])
     sector_filter = st.multiselect(
-        "Select Sectors (empty = all)",
-        options=all_sectors,
+        "Select Main Sectors (empty = all)",
+        options=all_main_sectors,
         default=[],
-        placeholder=f"All {len(all_sectors)} sectors",
+        placeholder=f"All {len(all_main_sectors)} sectors",
     )
 
     st.divider()
@@ -406,7 +409,7 @@ df_filtered = df_calc[
 ].copy()
 
 if sector_filter:
-    df_filtered = df_filtered[df_filtered["sector"].isin(sector_filter)]
+    df_filtered = df_filtered[df_filtered["main_sector"].isin(sector_filter)]
 
 if mcap_apply:
     known   = df_filtered[df_filtered["market_cap_cr"] > 0]
@@ -535,3 +538,30 @@ st.caption(
     f"Displaying from saved CSV — no live API call · "
     f"Click 📥 Update CSV above to refresh data"
 )
+
+# ── BUG FIX: Export filtered watchlist to CSV ────────────────────
+st.divider()
+st.markdown("### 💾 Save Watchlist Results")
+dl_col, save_col = st.columns([1, 1])
+
+export_df = df_disp[show_cols].copy()
+csv_bytes  = export_df.to_csv(index=False).encode("utf-8")
+
+with dl_col:
+    st.download_button(
+        label="⬇️ Download Watchlist as CSV",
+        data=csv_bytes,
+        file_name=f"watchlist_{datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%d%b%Y_%H%M')}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        help="Downloads the currently visible filtered watchlist to your device",
+    )
+
+with save_col:
+    if st.button("💾 Save Watchlist to data/ folder", use_container_width=True,
+                 help="Saves watchlist_export.csv inside the app's data/ folder"):
+        os.makedirs("data", exist_ok=True)
+        out_path = "data/watchlist_export.csv"
+        export_df.to_csv(out_path, index=False)
+        st.success(f"✅ Saved **{len(export_df)} stocks** → `{out_path}`")
+        st.caption(f"Saved at: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%d %b %Y %H:%M IST')}")

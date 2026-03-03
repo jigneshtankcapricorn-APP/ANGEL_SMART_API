@@ -16,8 +16,25 @@ if not st.session_state.get("connected"):
     st.stop()
 
 from utils.sector_indices import fetch_sector_data
-from utils.indicators import sector_trend
 from utils.sector_map import get_main_sector, build_sector_hierarchy
+
+# ── BUG FIX: sector_trend had BULL/BEAR labels swapped ───────────
+# Previous version: negative % (price FALLING) returned "🟢 BULL"
+#                   positive % (price RISING)  returned "🔴 BEAR"
+# Fixed version: positive majority → BULL, negative majority → BEAR
+def sector_trend(d: float, w: float, m: float) -> str:
+    """
+    Classify sector momentum from daily/weekly/monthly % changes.
+    Positive % = price UP = BULL signal.  Negative % = price DOWN = BEAR signal.
+    Majority vote: 2+ positives → BULL, 2+ negatives → BEAR, else NEUTRAL.
+    """
+    pos = sum(1 for x in (d, w, m) if x > 0)
+    neg = sum(1 for x in (d, w, m) if x < 0)
+    if pos >= 2:
+        return "🟢 BULL"
+    if neg >= 2:
+        return "🔴 BEAR"
+    return "⚪ NEUTRAL"
 
 st.title("🏭 Sector Trends")
 st.caption("Live NSE Sector Indices + Stock-based sector data · 🟢 BULL · 🔴 BEAR · ⚪ NEUTRAL")
@@ -64,6 +81,14 @@ if fetch_btn:
         obj = st.session_state.angel_obj
         with st.spinner("📡 Fetching live NSE sector index data from Angel One…"):
             rows = fetch_sector_data(obj)
+        # BUG FIX: fetch_sector_data imports broken sector_trend (BULL/BEAR swapped).
+        # Override each row's Trend with the corrected inline function above.
+        for r in rows:
+            r["Trend"] = sector_trend(
+                r.get("Daily %", 0) or 0,
+                r.get("Weekly %", 0) or 0,
+                r.get("Monthly %", 0) or 0,
+            )
         if not rows:
             st.warning("⚠️ Live sector indices not available. Switching to CSV-based data automatically.")
             source_mode = "📋 All sectors from CSV list"
@@ -89,11 +114,22 @@ if fetch_btn:
                 sec = str(sec).strip()
                 if not sec or sec in ("nan","Unknown","","-","—"): continue
                 avg = grp["proxy"].mean()
-                d, w, m = avg*0.15, avg*0.4, avg
+                # BUG FIX: avg*0.15 was always positive → always BULL (wrong).
+                # Use % Above 52W thresholds to assign meaningful trends:
+                #   ≤ 8%  → 🟢 BULL  (stocks tightly coiled near 52W low = accumulation zone)
+                #   8–18% → ⚪ NEUTRAL (modest distance from low)
+                #   > 18% → 🔴 BEAR   (stocks already extended, overbought / reversal risk)
+                if   avg <= 8.0:  trend_label = "🟢 BULL"
+                elif avg <= 18.0: trend_label = "⚪ NEUTRAL"
+                else:             trend_label = "🔴 BEAR"
+                # Use actual avg as display value so table shows real % not fake daily %
+                d = round(avg, 2)   # repurposed: Avg % Above 52W
+                w = round(grp["proxy"].min(), 2)
+                m = round(grp["proxy"].max(), 2)
                 rows.append({
                     "Sector": sec, "Stocks": len(grp),
-                    "Daily %": round(d,2), "Weekly %": round(w,2), "Monthly %": round(m,2),
-                    "Trend": sector_trend(d,w,m), "_d": d, "Source": src_lbl,
+                    "Avg%52W": round(d,2), "Min%52W": round(w,2), "Max%52W": round(m,2),
+                    "Trend": trend_label, "_d": d, "Source": src_lbl,
                     "Main Group": get_main_sector(sec),
                 })
         else:
@@ -221,7 +257,7 @@ if "Grouped" in view_mode:
     st.divider()
     st.markdown("### 🔎 Drill Down into Sub-Sectors")
 
-    show_cols_sub = [c for c in ["Sector","Stocks","Avg Mkt Cap (Cr)","LTP","Daily %","Weekly %","Monthly %","Trend","Source"]
+    show_cols_sub = [c for c in ["Sector","Stocks","Avg Mkt Cap (Cr)","LTP","Avg%52W","Min%52W","Max%52W","Daily %","Weekly %","Monthly %","Trend","Source"]
                      if c in df_s.columns]
     fmt_sub = {}
     for col in ["Daily %","Weekly %","Monthly %"]:

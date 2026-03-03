@@ -253,17 +253,33 @@ if run_btn:
     stat_box.empty()
 
     df_new = pd.DataFrame(results) if results else pd.DataFrame()
-    meta   = {"buy": buy_list, "watch": watch_list, "high_vol": high_vol, "total": len(universe)}
     ist    = pytz.timezone("Asia/Kolkata")
     ts     = datetime.now(ist).strftime("%d %b %Y %H:%M IST")
 
-    # Merge batches
-    prev_df = data_store.load("signals_df")
-    if prev_df is not None and isinstance(prev_df, pd.DataFrame) and not prev_df.empty and batch_start > 1 and not df_new.empty:
-        df_new = pd.concat([prev_df, df_new], ignore_index=True).drop_duplicates(subset=["Symbol"])
-        ts = f"{ts} (merged batch {batch_start}–{end_idx})"
-    elif not df_new.empty:
-        ts = f"{ts} (stocks {batch_start}–{end_idx} of {len(universe)})"
+    # ── BUG FIX: Always merge with previous batches, never wipe old data ──
+    prev_df   = data_store.load("signals_df")
+    prev_meta = data_store.load("signals_meta")
+
+    if batch_start > 1 and prev_df is not None and isinstance(prev_df, pd.DataFrame) and not prev_df.empty:
+        if not df_new.empty:
+            # Merge new signals with previous — deduplicate by Symbol
+            df_new = pd.concat([prev_df, df_new], ignore_index=True).drop_duplicates(subset=["Symbol"])
+            ts = f"{ts} (merged batch {batch_start}–{end_idx}, {len(df_new)} total)"
+        else:
+            # No new GREEN stocks in this batch — PRESERVE previous results
+            df_new = prev_df
+            ts = f"{ts} (batch {batch_start}–{end_idx}: 0 new signals, kept {len(df_new)} previous)"
+
+        # ── Accumulate meta (buy/watch/vol) across batches ──
+        if prev_meta and isinstance(prev_meta, dict):
+            buy_list   = list(set(prev_meta.get("buy", [])      + buy_list))
+            watch_list = list(set(prev_meta.get("watch", [])    + watch_list))
+            high_vol   = list(set(prev_meta.get("high_vol", []) + high_vol))
+    else:
+        if not df_new.empty:
+            ts = f"{ts} (stocks {batch_start}–{end_idx} of {len(universe)})"
+
+    meta = {"buy": buy_list, "watch": watch_list, "high_vol": high_vol, "total": len(universe)}
 
     save_df = df_new if not df_new.empty else pd.DataFrame()
     data_store.save("signals_df",   save_df)
