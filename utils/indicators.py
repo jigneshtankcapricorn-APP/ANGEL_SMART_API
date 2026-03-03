@@ -120,8 +120,35 @@ def compute_vol_ratio(volume, avg_vol):
 
 
 def sector_trend(daily, weekly, monthly):
-    if daily > 0 and weekly > 0 and monthly > 0: return '🟢 BULL'
-    if daily < 0 and weekly < 0 and monthly < 0: return '🔴 BEAR'
-    if daily > 0.5 and weekly > 1:               return '🟢 BULL'
-    if daily < -0.5 and weekly < -1:             return '🔴 BEAR'
+    """
+    Classify sector momentum from daily / weekly / monthly % changes.
+
+    BUG FIX — two problems existed in the original:
+
+    1. STRICT ALL-OR-NOTHING logic:
+       Required ALL THREE timeframes to be positive for BULL, or all three
+       negative for BEAR.  In practice this caused almost every sector to
+       fall through to ⚪ NEUTRAL because real markets rarely have all three
+       in perfect agreement.  Fixed with a majority-vote (2 out of 3).
+
+    2. PROXY VALUES always positive (Watchlist/Signals mode):
+       The caller in 4_Sector_Trends.py was computing d, w, m as
+       avg * 0.15 / avg * 0.4 / avg  where avg = mean(% Above 52W Low).
+       % Above 52W Low is ALWAYS positive → every sector was always BULL.
+       That call site is fixed separately in 4_Sector_Trends.py.
+
+    CORRECT LOGIC:
+       Positive % = price went UP  = bullish signal.
+       Negative % = price went DOWN = bearish signal.
+       2+ positives → 🟢 BULL
+       2+ negatives → 🔴 BEAR
+       Mixed        → ⚪ NEUTRAL
+    """
+    pos = sum(1 for x in (daily, weekly, monthly) if x > 0)
+    neg = sum(1 for x in (daily, weekly, monthly) if x < 0)
+
+    if pos >= 2:
+        return '🟢 BULL'
+    if neg >= 2:
+        return '🔴 BEAR'
     return '⚪ NEUTRAL'
