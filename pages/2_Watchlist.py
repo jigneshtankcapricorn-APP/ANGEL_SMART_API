@@ -13,227 +13,148 @@ from utils import data_store
 require_app_login()
 render_sidebar()
 
-from utils.angel_connect import (
-    load_instrument_master, get_token,
-    fetch_ltp, fetch_live_52w
-)
+from utils.angel_connect import load_instrument_master, get_token, fetch_ltp, fetch_live_52w
 from utils.indicators import compute_vol_ratio
 
-# ── CSV paths — written automatically by the app, you never touch these ──
-WATCHLIST_CSV    = "data/watchlist_cache.csv"
-WATCHLIST_CSV_TS = "data/watchlist_cache_time.txt"
+# ─────────────────────────────────────────────────────────────────
+# FILE PATHS
+# stocks_full.csv  → your original 2242 stocks (symbol, name, sector, market_cap_cr)
+# stocks_live.csv  → enriched with live data (LTP, 52W, Volume) — written by Update CSV button
+# ─────────────────────────────────────────────────────────────────
+STOCKS_BASE = "data/stocks_full.csv"
+STOCKS_LIVE = "data/stocks_live.csv"
+LIVE_TS     = "data/stocks_live_time.txt"
 
-def load_csv_cache():
-    """Load previously saved watchlist from disk. Returns DataFrame or empty."""
-    if os.path.exists(WATCHLIST_CSV):
+@st.cache_data(show_spinner=False)
+def load_base_stocks():
+    return pd.read_csv(STOCKS_BASE)
+
+def load_live_csv():
+    if os.path.exists(STOCKS_LIVE):
         try:
-            return pd.read_csv(WATCHLIST_CSV)
-        except Exception:
+            return pd.read_csv(STOCKS_LIVE)
+        except:
             return pd.DataFrame()
     return pd.DataFrame()
 
-def save_csv_cache(df, timestamp):
-    """Save to CSV on disk — survives phone screen off / app switch / restart."""
-    os.makedirs("data", exist_ok=True)
-    df.to_csv(WATCHLIST_CSV, index=False)
-    with open(WATCHLIST_CSV_TS, "w") as f:
-        f.write(timestamp)
-
-def load_csv_timestamp():
-    if os.path.exists(WATCHLIST_CSV_TS):
+def load_live_timestamp():
+    if os.path.exists(LIVE_TS):
         try:
-            return open(WATCHLIST_CSV_TS).read().strip()
-        except Exception:
+            return open(LIVE_TS).read().strip()
+        except:
             return ""
     return ""
 
-# ── Load stock universe (your 2200+ stocks) ──────────────────────
-@st.cache_data(show_spinner=False)
-def load_stocks():
-    return pd.read_csv("data/stocks_full.csv")
+def save_live_csv(df, timestamp):
+    os.makedirs("data", exist_ok=True)
+    df.to_csv(STOCKS_LIVE, index=False)
+    with open(LIVE_TS, "w") as f:
+        f.write(timestamp)
 
-stocks_df = load_stocks()
-TOTAL = len(stocks_df)
-
-# ── Persist filter settings ───────────────────────────────────────
-def ss_init(key, default):
-    if key not in st.session_state:
-        st.session_state[key] = default
-
-ss_init("wl_min_pct",      1.0)
-ss_init("wl_max_pct",      15.0)
-ss_init("wl_min_mcap",     0.0)
-ss_init("wl_mcap_apply",   False)
-ss_init("wl_sectors",      [])
-ss_init("wl_batch_size",   200)
-ss_init("wl_batch_start",  1)
-ss_init("wl_timeout",      0.12)
+stocks_base = load_base_stocks()
+TOTAL       = len(stocks_base)
+live_df     = load_live_csv()
+live_time   = load_live_timestamp()
 
 # ── CSS ───────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-.page-title{font-size:1.8rem;font-weight:700;color:#1A73E8;margin-bottom:2px;}
-.sub-caption{color:#666;font-size:.88rem;margin-bottom:16px;}
-.saved-banner{background:#e8f5e9;border:1px solid #a5d6a7;border-radius:8px;
-              padding:10px 16px;color:#1b5e20;font-size:.9rem;margin-bottom:12px;}
-.warn-banner{background:#fff3cd;border:1px solid #ffc107;border-radius:8px;
-             padding:10px 16px;color:#856404;font-size:.9rem;margin-bottom:12px;}
+.page-title   {font-size:1.8rem;font-weight:700;color:#1A73E8;margin-bottom:2px;}
+.sub-caption  {color:#666;font-size:.88rem;margin-bottom:16px;}
+.csv-box      {background:#e8f5e9;border:1px solid #a5d6a7;border-radius:8px;
+               padding:12px 16px;color:#1b5e20;font-size:.93rem;margin-bottom:4px;}
+.csv-warn     {background:#fff3cd;border:1px solid #ffc107;border-radius:8px;
+               padding:12px 16px;color:#856404;font-size:.93rem;margin-bottom:4px;}
+.csv-section  {background:#f8f9fa;border:1px solid #dee2e6;border-radius:10px;
+               padding:16px;margin-bottom:20px;}
+.section-divider{border-top:2px solid #1A73E8;margin:20px 0 16px 0;}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="page-title">📋 Watchlist</div>', unsafe_allow_html=True)
 st.markdown(
-    f'<div class="sub-caption">Universe: <b>{TOTAL:,} stocks</b> · '
-    f'Press <b>🔄 Update CSV</b> once before/after market · '
-    f'Data saved to CSV — safe on mobile, no background fetch needed</div>',
+    f'<div class="sub-caption">'
+    f'<b>Step 1:</b> Update CSV once (before/after market) → '
+    f'<b>Step 2:</b> Set filters → Watchlist reads from CSV instantly, no API needed'
+    f'</div>',
     unsafe_allow_html=True
 )
 
-# ─────────────────────────────────────────────────────────────────
-# SIDEBAR FILTERS
-# ─────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### ⚙️ Scan Filters")
-    st.divider()
+# ═════════════════════════════════════════════════════════════════
+# SECTION 1 — UPDATE CSV  (completely separate from Watchlist)
+# ═════════════════════════════════════════════════════════════════
+st.markdown("### 📥 Step 1 — Update CSV")
+st.caption(
+    "Fetches LTP, 52W High/Low and Volume for all 2,242 stocks from Angel One → "
+    "saves to stocks_live.csv. Do this once before or after market. "
+    "Watchlist below reads from this file."
+)
 
-    st.markdown("**📊 % Above 52W Low**")
-    min_pct = st.number_input("Min %", 0.0, 500.0, value=st.session_state.wl_min_pct, step=0.5)
-    max_pct = st.number_input("Max %", 0.0, 500.0, value=st.session_state.wl_max_pct, step=0.5)
-    st.session_state.wl_min_pct = min_pct
-    st.session_state.wl_max_pct = max_pct
-
-    st.divider()
-
-    st.markdown("**🏭 Sector Filter**")
-    all_sectors = sorted([
-        s for s in stocks_df["sector"].dropna().unique()
-        if s and s.strip() not in ("Unknown", "")
-    ])
-    sector_filter = st.multiselect(
-        "Select Sectors (empty = all)",
-        options=all_sectors,
-        default=st.session_state.wl_sectors,
-        placeholder=f"All {len(all_sectors)} sectors",
-    )
-    st.session_state.wl_sectors = sector_filter
-    if sector_filter:
-        st.caption(f"✅ {len(sector_filter)} sector(s) selected")
-
-    st.divider()
-
-    st.markdown("**💰 Market Cap (Crores ₹)**")
-    mcap_apply = st.checkbox("Enable Market Cap Filter", value=st.session_state.wl_mcap_apply)
-    st.session_state.wl_mcap_apply = mcap_apply
-
-    if mcap_apply:
-        mcap_cat = st.selectbox("Quick Select", [
-            "Custom",
-            "Micro Cap (< ₹500 Cr)",
-            "Small Cap (₹500 – ₹5,000 Cr)",
-            "Mid Cap (₹5,000 – ₹20,000 Cr)",
-            "Large Cap (> ₹20,000 Cr)",
-            "All sizes"
-        ])
-        if   mcap_cat == "Micro Cap (< ₹500 Cr)":         min_mcap = 0.0;     max_mcap = 500.0
-        elif mcap_cat == "Small Cap (₹500 – ₹5,000 Cr)":  min_mcap = 500.0;   max_mcap = 5000.0
-        elif mcap_cat == "Mid Cap (₹5,000 – ₹20,000 Cr)": min_mcap = 5000.0;  max_mcap = 20000.0
-        elif mcap_cat == "Large Cap (> ₹20,000 Cr)":       min_mcap = 20000.0; max_mcap = 9999999.0
-        elif mcap_cat == "All sizes":                       min_mcap = 0.0;     max_mcap = 9999999.0
-        else:
-            min_mcap = st.number_input("Min Market Cap (Cr)", 0.0, value=st.session_state.wl_min_mcap, step=100.0)
-            max_mcap = st.number_input("Max Market Cap (Cr)", 0.0, value=9999999.0, step=1000.0)
-        st.session_state.wl_min_mcap = min_mcap
-        st.caption("⚠️ Market cap data for 2,207 of 2,242 stocks.")
-    else:
-        min_mcap = 0.0
-        max_mcap = 9999999.0
-
-    st.divider()
-
-    st.markdown("### 📦 Batch Settings")
-    batch_size = st.select_slider(
-        "Batch Size",
-        options=[50, 100, 200, 300, 500, 1000, 2242],
-        value=st.session_state.wl_batch_size,
-    )
-    batch_start = st.number_input(
-        "Start from stock #", min_value=1, max_value=TOTAL,
-        value=st.session_state.wl_batch_start, step=1,
-        help="Resume from here if previous run stopped"
-    )
-    timeout_per = st.number_input(
-        "Delay per stock (sec)", min_value=0.05, max_value=2.0,
-        value=st.session_state.wl_timeout, step=0.01,
-    )
-    st.session_state.wl_batch_size  = batch_size
-    st.session_state.wl_batch_start = batch_start
-    st.session_state.wl_timeout     = timeout_per
-
-    st.divider()
-    st.caption("🟢 STRONG ≤12% · 🟡 MOD 12–15% · 🟠 WATCH >15%")
-
-# ─────────────────────────────────────────────────────────────────
-# LOAD WHAT'S ALREADY SAVED ON DISK
-# ─────────────────────────────────────────────────────────────────
-csv_df   = load_csv_cache()
-csv_time = load_csv_timestamp()
-
-# ─────────────────────────────────────────────────────────────────
-# BUTTONS ROW
-# ─────────────────────────────────────────────────────────────────
 connected = st.session_state.get("connected", False)
 
-c_btn, c_clr, c_info = st.columns([1.4, 1, 3])
+# Batch settings for CSV update (in an expander to keep UI clean)
+with st.expander("⚙️ Batch Settings for CSV Update", expanded=False):
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        csv_batch_size = st.select_slider(
+            "Batch Size",
+            options=[200, 300, 500, 1000, 2242],
+            value=st.session_state.get("csv_batch_size", 500),
+        )
+        st.session_state["csv_batch_size"] = csv_batch_size
+    with col_b:
+        csv_batch_start = st.number_input(
+            "Start from stock #", min_value=1, max_value=TOTAL,
+            value=st.session_state.get("csv_batch_start", 1), step=1,
+            help="Auto-advances after each run. Change only if you want to restart."
+        )
+        st.session_state["csv_batch_start"] = csv_batch_start
+    with col_c:
+        csv_timeout = st.number_input(
+            "Delay per stock (sec)", min_value=0.05, max_value=2.0,
+            value=st.session_state.get("csv_timeout", 0.12), step=0.01,
+        )
+        st.session_state["csv_timeout"] = csv_timeout
 
-with c_btn:
-    run_btn = st.button(
-        "🔄 Update CSV",
+# ── Update CSV button row ─────────────────────────────────────────
+btn_col, info_col = st.columns([1.5, 4])
+
+with btn_col:
+    update_csv_btn = st.button(
+        "📥 Update CSV",
         type="primary",
         use_container_width=True,
-        help="Fetch all 2200+ stocks from Angel One → auto-save to CSV. Press once before/after market."
+        disabled=not connected,
+        help="Fetch all 2242 stocks → auto-save to stocks_live.csv"
     )
-with c_clr:
-    clear_btn = st.button("🗑️ Clear CSV", use_container_width=True)
-with c_info:
-    if not csv_df.empty and csv_time:
+    if not connected:
+        st.caption("⚠️ Connect Angel One first")
+
+with info_col:
+    if live_time:
+        remaining = TOTAL - (len(live_df) if not live_df.empty else 0)
         st.markdown(
-            f'<div class="saved-banner">'
-            f'💾 CSV last updated: <b>{csv_time}</b> · '
-            f'<b>{len(csv_df)} stocks</b> saved · '
-            f'Displaying from CSV — no live fetch needed'
+            f'<div class="csv-box">'
+            f'✅ Last CSV update: <b>{live_time}</b> &nbsp;|&nbsp; '
+            f'<b>{len(live_df):,} stocks</b> in CSV'
             f'</div>',
             unsafe_allow_html=True
         )
     else:
         st.markdown(
-            '<div class="warn-banner">'
-            '⚠️ No CSV saved yet — connect to Angel One → click <b>🔄 Update CSV</b> once'
+            '<div class="csv-warn">'
+            '⚠️ <b>CSV not updated yet.</b> Connect to Angel One → click 📥 Update CSV first. '
+            'Watchlist will not work until CSV has data.'
             '</div>',
             unsafe_allow_html=True
         )
 
-if clear_btn:
-    for f in [WATCHLIST_CSV, WATCHLIST_CSV_TS]:
-        if os.path.exists(f):
-            os.remove(f)
-    data_store.clear("watchlist_df")
-    data_store.clear("last_watchlist")
-    st.session_state.pop("watchlist_data", None)
-    st.rerun()
+# ── Run CSV Update ────────────────────────────────────────────────
+if update_csv_btn:
+    if not connected:
+        st.error("❌ Please Connect to Angel One from the sidebar first.")
+        st.stop()
 
-if run_btn and not connected:
-    st.error("❌ Please Connect to Angel One from the sidebar first.")
-    st.stop()
-
-def get_status(pct):
-    if pct <= 12: return "🟢 STRONG"
-    if pct <= 15: return "🟡 MODERATE"
-    return "🟠 WATCH"
-
-# ─────────────────────────────────────────────────────────────────
-# 🔄 UPDATE CSV — fetches ALL 2200+ stocks → saves automatically
-# ─────────────────────────────────────────────────────────────────
-if run_btn and connected:
     if not check_session_alive():
         st.error("❌ Angel One session expired. Please Reconnect from sidebar.")
         st.stop()
@@ -241,26 +162,13 @@ if run_btn and connected:
     obj         = st.session_state.angel_obj
     instruments = load_instrument_master()
 
-    # Apply filters to the full 2200+ stock universe
-    df_work = stocks_df.copy()
-
-    if sector_filter:
-        df_work = df_work[df_work["sector"].isin(sector_filter)]
-
-    if mcap_apply and min_mcap > 0:
-        known   = df_work[df_work["market_cap_cr"] > 0]
-        unknown = df_work[df_work["market_cap_cr"] == 0]
-        known   = known[(known["market_cap_cr"] >= min_mcap) & (known["market_cap_cr"] <= max_mcap)]
-        df_work = pd.concat([known, unknown], ignore_index=True)
-
-    # Batch slice (for resuming if it stopped mid-way)
-    start_idx = batch_start - 1
-    end_idx   = min(start_idx + batch_size, len(df_work))
-    batch_df  = df_work.iloc[start_idx:end_idx].reset_index(drop=True)
+    start_idx = csv_batch_start - 1
+    end_idx   = min(start_idx + csv_batch_size, TOTAL)
+    batch_df  = stocks_base.iloc[start_idx:end_idx].reset_index(drop=True)
 
     st.info(
-        f"📡 Fetching stocks **#{batch_start} to #{end_idx}** of {len(df_work)} total · "
-        f"Will auto-save to CSV when done ✅"
+        f"📡 Fetching live data for stocks **#{csv_batch_start} to #{end_idx}** "
+        f"of {TOTAL} total → will auto-save to CSV"
     )
 
     pc, sc = st.columns([3, 1])
@@ -287,9 +195,10 @@ if run_btn and connected:
         prog_bar.progress(pct_done)
         prog_text.markdown(
             f"**[{i+1}/{len(batch_df)}]** `{sym}` — {name}  \n"
-            f"⏱ {int(elapsed//60)}m{int(elapsed%60)}s elapsed · ETA: {eta_str} · ✅ {len(results)} found"
+            f"⏱ {int(elapsed//60)}m{int(elapsed%60)}s elapsed · ETA: {eta_str} · "
+            f"✅ {len(results)} fetched · ⏭ {skipped} skipped"
         )
-        stat_box.metric("✅ Found", len(results))
+        stat_box.metric("✅ Fetched", len(results))
 
         token = get_token(instruments, sym)
         if not token:
@@ -299,7 +208,7 @@ if run_btn and connected:
         try:
             ltp = fetch_ltp(obj, "NSE", sym, token)
         except Exception:
-            errors += 1; time.sleep(timeout_per); continue
+            errors += 1; time.sleep(csv_timeout); continue
 
         if not ltp or ltp == 0:
             skipped += 1; time.sleep(0.05); continue
@@ -307,150 +216,251 @@ if run_btn and connected:
         try:
             live52 = fetch_live_52w(obj, token, "NSE", days=365)
         except Exception:
-            errors += 1; time.sleep(timeout_per); continue
+            errors += 1; time.sleep(csv_timeout); continue
 
         if not live52 or live52.get("w52_low", 0) == 0:
             skipped += 1; time.sleep(0.05); continue
 
-        w52_low  = live52["w52_low"]
-        w52_high = live52["w52_high"]
-        vol      = live52["ref_volume"]
-        avg_vol  = live52["avg_vol_20d"]
-        pct_ab   = ((ltp - w52_low) / w52_low * 100) if w52_low > 0 else 0
-
-        if pct_ab < min_pct or pct_ab > max_pct:
-            time.sleep(timeout_per); continue
-
-        vr, vl   = compute_vol_ratio(vol, avg_vol)
-        mcap_val = float(row.get("market_cap_cr", 0))
-        sector   = str(row.get("sector", "Unknown")).strip() or "Unknown"
-
         results.append({
-            "Name":         name,
-            "Symbol":       sym,
-            "Sector":       sector,
-            "LTP":          round(ltp, 2),
-            "52W High":     round(w52_high, 2),
-            "52W Low":      round(w52_low, 2),
-            "% Above 52W":  round(pct_ab, 2),
-            "Mkt Cap (Cr)": round(mcap_val, 2) if mcap_val > 0 else None,
-            "Volume":       int(vol),
-            "Avg Vol 20D":  int(avg_vol),
-            "Vol Ratio":    vl,
-            "_vr":          vr,
-            "Status":       get_status(pct_ab),
+            "symbol":        sym,
+            "name":          name,
+            "sector":        str(row.get("sector", "Unknown")).strip() or "Unknown",
+            "market_cap_cr": float(row.get("market_cap_cr", 0)),
+            "ltp":           round(ltp, 2),
+            "w52_high":      round(live52["w52_high"], 2),
+            "w52_low":       round(live52["w52_low"], 2),
+            "volume":        int(live52["ref_volume"]),
+            "avg_vol_20d":   int(live52["avg_vol_20d"]),
         })
-        time.sleep(timeout_per)
+        time.sleep(csv_timeout)
 
     prog_bar.empty(); prog_text.empty(); stat_box.empty()
 
-    df_r = pd.DataFrame(results) if results else pd.DataFrame()
-    if not df_r.empty:
-        df_r = df_r.sort_values("% Above 52W").reset_index(drop=True)
+    df_new = pd.DataFrame(results) if results else pd.DataFrame()
 
     ist = pytz.timezone("Asia/Kolkata")
     ts  = datetime.now(ist).strftime("%d %b %Y %H:%M IST")
 
-    # Merge with previous batch if resuming
-    if not csv_df.empty and batch_start > 1 and not df_r.empty:
-        df_r = pd.concat([csv_df, df_r], ignore_index=True).drop_duplicates(subset=["Symbol"])
-        df_r = df_r.sort_values("% Above 52W").reset_index(drop=True)
-        ts   = f"{ts} (merged #{batch_start}–{end_idx})"
-    elif not df_r.empty:
-        ts   = f"{ts} (stocks {batch_start}–{end_idx} of {len(df_work)})"
+    # Merge with previously saved CSV if resuming
+    if not live_df.empty and csv_batch_start > 1 and not df_new.empty:
+        df_merged = pd.concat([live_df, df_new], ignore_index=True).drop_duplicates(subset=["symbol"])
+        ts = f"{ts} · batch #{csv_batch_start}–{end_idx} merged"
+    elif not df_new.empty:
+        df_merged = df_new
+        ts = f"{ts} · stocks #{csv_batch_start}–{end_idx} of {TOTAL}"
+    else:
+        df_merged = live_df
 
-    if not df_r.empty:
-        # ✅ AUTO SAVE TO CSV — you did nothing, app saved it automatically
-        save_csv_cache(df_r, ts)
-        data_store.save("watchlist_df",   df_r)
-        data_store.save("last_watchlist", ts)
-        st.session_state["watchlist_data"] = df_r
-        csv_df   = df_r
-        csv_time = ts
+    if not df_merged.empty:
+        save_live_csv(df_merged, ts)
+        live_df   = df_merged
+        live_time = ts
+        st.cache_data.clear()
 
-    # Auto-advance batch start for next run
+    # Auto-advance batch start
     next_start = end_idx + 1
-    st.session_state.wl_batch_start = next_start if next_start <= len(df_work) else 1
+    st.session_state["csv_batch_start"] = next_start if next_start <= TOTAL else 1
 
     elapsed_total = time.time() - scan_start
     st.success(
-        f"✅ Done in {int(elapsed_total//60)}m {int(elapsed_total%60)}s · "
-        f"**{len(df_r) if not df_r.empty else 0} stocks matched** · "
-        f"{skipped} skipped · {errors} errors · "
-        f"💾 **CSV saved automatically!**"
+        f"✅ CSV updated in {int(elapsed_total//60)}m {int(elapsed_total%60)}s · "
+        f"**{len(df_merged):,} total stocks in CSV** · "
+        f"{skipped} skipped · {errors} errors · 💾 Saved to stocks_live.csv"
     )
-    if end_idx < len(df_work):
+    if end_idx < TOTAL:
         st.info(
-            f"💡 Batch done. Next batch auto-set to **#{next_start}** — "
-            f"click 🔄 Update CSV again to continue."
+            f"💡 Batch complete. Next batch auto-set to **#{next_start}** — "
+            f"click 📥 Update CSV again to continue."
         )
+    else:
+        st.balloons()
+        st.success("🎉 All stocks updated in CSV!")
 
-# ─────────────────────────────────────────────────────────────────
-# DISPLAY — reads from CSV (no live fetch needed)
-# ─────────────────────────────────────────────────────────────────
-# Prefer session state (freshly fetched) over CSV
-wl_s = st.session_state.get("watchlist_data")
-if wl_s is not None and isinstance(wl_s, pd.DataFrame) and not wl_s.empty:
-    df_r = wl_s
-elif not csv_df.empty:
-    df_r = csv_df
-    # Sync to session + data_store so Signals page can use it
-    st.session_state["watchlist_data"] = csv_df
-    data_store.save("watchlist_df", csv_df)
-else:
-    df_r = None
+# ═════════════════════════════════════════════════════════════════
+# SECTION 2 — WATCHLIST  (reads from CSV only, zero API calls)
+# ═════════════════════════════════════════════════════════════════
+st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+st.markdown("### 📋 Step 2 — Watchlist (reads from CSV)")
 
-if df_r is None or df_r.empty:
-    st.info(
-        "Connect to Angel One in sidebar → set your filters → "
-        "click **🔄 Update CSV** once before or after market hours."
+# ── Block if CSV not ready ────────────────────────────────────────
+if live_df.empty:
+    st.warning(
+        "⚠️ **CSV is empty.** Please update CSV first using the 📥 Update CSV button above. "
+        "Watchlist works only after at least one full (or partial) CSV update."
     )
     st.stop()
 
-# ── Summary metrics ───────────────────────────────────────────────
-st.divider()
-strong = int((df_r["Status"] == "🟢 STRONG").sum())
-mod    = int((df_r["Status"] == "🟡 MODERATE").sum())
-wtch   = int((df_r["Status"] == "🟠 WATCH").sum())
-vbk    = int((df_r["_vr"] >= 1.5).sum()) if "_vr" in df_r.columns else 0
+# ── Compute % Above 52W for all stocks in CSV ─────────────────────
+def get_status(pct):
+    if pct <= 12: return "🟢 STRONG"
+    if pct <= 15: return "🟡 MODERATE"
+    return "🟠 WATCH"
 
-m1,m2,m3,m4,m5 = st.columns(5)
-m1.metric("Total Stocks",    len(df_r))
+df_calc = live_df.copy()
+df_calc["pct_above_52w"] = df_calc.apply(
+    lambda r: round(((r["ltp"] - r["w52_low"]) / r["w52_low"] * 100), 2)
+    if r.get("w52_low", 0) > 0 else 0,
+    axis=1
+)
+df_calc["vol_ratio_raw"], df_calc["vol_ratio_lbl"] = zip(
+    *df_calc.apply(lambda r: compute_vol_ratio(r.get("volume", 0), r.get("avg_vol_20d", 0)), axis=1)
+)
+df_calc["status"] = df_calc["pct_above_52w"].apply(get_status)
+
+# ── Sidebar filters ───────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### ⚙️ Watchlist Filters")
+    st.caption("Filters apply to CSV data — no API call")
+    st.divider()
+
+    st.markdown("**📊 % Above 52W Low**")
+    min_pct = st.number_input("Min %", 0.0, 500.0, value=1.0,  step=0.5)
+    max_pct = st.number_input("Max %", 0.0, 500.0, value=15.0, step=0.5)
+
+    st.divider()
+    st.markdown("**🏭 Sector Filter**")
+    all_sectors = sorted([
+        s for s in df_calc["sector"].dropna().unique()
+        if s and s.strip() not in ("Unknown", "")
+    ])
+    sector_filter = st.multiselect(
+        "Select Sectors (empty = all)",
+        options=all_sectors,
+        default=[],
+        placeholder=f"All {len(all_sectors)} sectors",
+    )
+
+    st.divider()
+    st.markdown("**💰 Market Cap (Crores ₹)**")
+    mcap_apply = st.checkbox("Enable Market Cap Filter", value=False)
+    if mcap_apply:
+        mcap_cat = st.selectbox("Quick Select", [
+            "Custom",
+            "Micro Cap (< ₹500 Cr)",
+            "Small Cap (₹500 – ₹5,000 Cr)",
+            "Mid Cap (₹5,000 – ₹20,000 Cr)",
+            "Large Cap (> ₹20,000 Cr)",
+            "All sizes"
+        ])
+        if   mcap_cat == "Micro Cap (< ₹500 Cr)":         min_mcap = 0.0;     max_mcap = 500.0
+        elif mcap_cat == "Small Cap (₹500 – ₹5,000 Cr)":  min_mcap = 500.0;   max_mcap = 5000.0
+        elif mcap_cat == "Mid Cap (₹5,000 – ₹20,000 Cr)": min_mcap = 5000.0;  max_mcap = 20000.0
+        elif mcap_cat == "Large Cap (> ₹20,000 Cr)":       min_mcap = 20000.0; max_mcap = 9999999.0
+        elif mcap_cat == "All sizes":                       min_mcap = 0.0;     max_mcap = 9999999.0
+        else:
+            min_mcap = st.number_input("Min Market Cap (Cr)", 0.0, value=0.0, step=100.0)
+            max_mcap = st.number_input("Max Market Cap (Cr)", 0.0, value=9999999.0, step=1000.0)
+    else:
+        min_mcap, max_mcap = 0.0, 9999999.0
+
+    st.divider()
+    vol_only = st.checkbox("🔥 Volume Breakouts only", value=False)
+    st.divider()
+    st.caption("🟢 STRONG ≤12% · 🟡 MOD 12–15% · 🟠 WATCH >15%")
+
+# ── Apply filters (instant — no API) ─────────────────────────────
+df_filtered = df_calc[
+    (df_calc["pct_above_52w"] >= min_pct) &
+    (df_calc["pct_above_52w"] <= max_pct)
+].copy()
+
+if sector_filter:
+    df_filtered = df_filtered[df_filtered["sector"].isin(sector_filter)]
+
+if mcap_apply:
+    known   = df_filtered[df_filtered["market_cap_cr"] > 0]
+    unknown = df_filtered[df_filtered["market_cap_cr"] == 0]
+    known   = known[(known["market_cap_cr"] >= min_mcap) & (known["market_cap_cr"] <= max_mcap)]
+    df_filtered = pd.concat([known, unknown], ignore_index=True)
+
+if vol_only:
+    df_filtered = df_filtered[df_filtered["vol_ratio_raw"] >= 1.5]
+
+df_filtered = df_filtered.sort_values("pct_above_52w").reset_index(drop=True)
+
+# Sync to data_store so Signals page can use it
+if not df_filtered.empty:
+    sync_df = df_filtered.rename(columns={
+        "name":          "Name",
+        "symbol":        "Symbol",
+        "sector":        "Sector",
+        "ltp":           "LTP",
+        "w52_high":      "52W High",
+        "w52_low":       "52W Low",
+        "pct_above_52w": "% Above 52W",
+        "market_cap_cr": "Mkt Cap (Cr)",
+        "volume":        "Volume",
+        "avg_vol_20d":   "Avg Vol 20D",
+        "vol_ratio_lbl": "Vol Ratio",
+        "vol_ratio_raw": "_vr",
+        "status":        "Status",
+    })
+    data_store.save("watchlist_df", sync_df)
+    st.session_state["watchlist_data"] = sync_df
+
+# ── Summary metrics ───────────────────────────────────────────────
+strong = int((df_filtered["status"] == "🟢 STRONG").sum())
+mod    = int((df_filtered["status"] == "🟡 MODERATE").sum())
+wtch   = int((df_filtered["status"] == "🟠 WATCH").sum())
+vbk    = int((df_filtered["vol_ratio_raw"] >= 1.5).sum())
+
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("Total Stocks",    len(df_filtered))
 m2.metric("🟢 STRONG",      strong)
 m3.metric("🟡 MODERATE",    mod)
 m4.metric("🟠 WATCH",       wtch)
 m5.metric("🔥 Vol Breakout", vbk)
 
-if "_vr" in df_r.columns:
-    vb = df_r[df_r["_vr"] >= 1.5]
-    if not vb.empty:
-        st.error("🔥 **VOLUME BREAKOUT:** " + "  ·  ".join(
-            f"{r['Symbol']} ({r['Vol Ratio']})" for _, r in vb.iterrows()
-        ))
+vb = df_filtered[df_filtered["vol_ratio_raw"] >= 1.5]
+if not vb.empty:
+    st.error("🔥 **VOLUME BREAKOUT:** " + "  ·  ".join(
+        f"{r['symbol']} ({r['vol_ratio_lbl']})" for _, r in vb.iterrows()
+    ))
 
 st.divider()
 
-# ── Display filters ───────────────────────────────────────────────
-fc1, fc2, fc3 = st.columns(3)
-with fc1:
-    status_filter = st.multiselect(
-        "Filter by Status",
-        ["🟢 STRONG","🟡 MODERATE","🟠 WATCH"],
-        default=["🟢 STRONG","🟡 MODERATE","🟠 WATCH"]
-    )
-with fc2:
-    available_sectors = sorted(df_r["Sector"].dropna().unique().tolist()) if "Sector" in df_r.columns else []
-    sec_display = st.multiselect("Filter by Sector", available_sectors, default=[], placeholder="All sectors")
-with fc3:
-    vol_only = st.checkbox("🔥 Volume Breakouts only", value=False)
+if df_filtered.empty:
+    st.warning("No stocks match your current filters. Try adjusting % range or sector.")
+    st.stop()
 
-df_show = df_r[df_r["Status"].isin(status_filter)].copy()
-if sec_display:
-    df_show = df_show[df_show["Sector"].isin(sec_display)]
-if vol_only and "_vr" in df_show.columns:
-    df_show = df_show[df_show["_vr"] >= 1.5]
+# ── Status filter ─────────────────────────────────────────────────
+status_sel = st.multiselect(
+    "Filter by Status",
+    ["🟢 STRONG", "🟡 MODERATE", "🟠 WATCH"],
+    default=["🟢 STRONG", "🟡 MODERATE", "🟠 WATCH"]
+)
+df_show = df_filtered[df_filtered["status"].isin(status_sel)].copy()
 
-# ── Styled table ──────────────────────────────────────────────────
+# ── Rename for display ────────────────────────────────────────────
+df_disp = df_show.rename(columns={
+    "name":          "Name",
+    "symbol":        "Symbol",
+    "sector":        "Sector",
+    "ltp":           "LTP",
+    "w52_high":      "52W High",
+    "w52_low":       "52W Low",
+    "pct_above_52w": "% Above 52W",
+    "market_cap_cr": "Mkt Cap (Cr)",
+    "volume":        "Volume",
+    "avg_vol_20d":   "Avg Vol 20D",
+    "vol_ratio_lbl": "Vol Ratio",
+    "status":        "Status",
+})
+
+show_cols = ["Name","Symbol","Sector","LTP","52W High","52W Low",
+             "% Above 52W","Mkt Cap (Cr)","Volume","Avg Vol 20D","Vol Ratio","Status"]
+show_cols = [c for c in show_cols if c in df_disp.columns]
+
+fmt = {
+    "LTP":          "₹{:,.2f}",
+    "52W High":     "₹{:,.2f}",
+    "52W Low":      "₹{:,.2f}",
+    "% Above 52W":  "{:.2f}%",
+    "Mkt Cap (Cr)": "₹{:,.2f}",
+    "Volume":       "{:,}",
+    "Avg Vol 20D":  "{:,}",
+}
+
 def cs(v):
     if "STRONG"   in str(v): return "background:#d4edda;color:#155724;font-weight:700"
     if "MODERATE" in str(v): return "background:#fff3cd;color:#856404;font-weight:700"
@@ -468,37 +478,19 @@ def cpct(v):
         return "color:#7d4e00"
     except: return ""
 
-show = ["Name","Symbol","Sector","LTP","52W High","52W Low",
-        "% Above 52W","Mkt Cap (Cr)","Volume","Avg Vol 20D","Vol Ratio","Status"]
-show = [c for c in show if c in df_show.columns]
+st.markdown(f"**{len(df_disp)} stocks** matching filters")
+try:
+    styled = (df_disp[show_cols].style
+        .map(cs,   subset=["Status"])
+        .map(cv,   subset=["Vol Ratio"])
+        .map(cpct, subset=["% Above 52W"])
+        .format(fmt, na_rep="—"))
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+except Exception:
+    st.dataframe(df_disp[show_cols], use_container_width=True, hide_index=True)
 
-fmt = {
-    "LTP":          "₹{:,.2f}",
-    "52W High":     "₹{:,.2f}",
-    "52W Low":      "₹{:,.2f}",
-    "% Above 52W":  "{:.2f}%",
-    "Mkt Cap (Cr)": "₹{:,.2f}",
-    "Volume":       "{:,}",
-    "Avg Vol 20D":  "{:,}",
-}
-
-if df_show.empty:
-    st.warning("No stocks match the selected filters.")
-else:
-    st.markdown(f"**{len(df_show)} stocks** matching filters")
-    try:
-        styled = (df_show[show].style
-            .map(cs,   subset=["Status"])
-            .map(cv,   subset=["Vol Ratio"])
-            .map(cpct, subset=["% Above 52W"])
-            .format(fmt, na_rep="—"))
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-    except Exception:
-        st.dataframe(df_show[show], use_container_width=True, hide_index=True)
-
-if csv_time:
-    st.caption(
-        f"📅 CSV updated: **{csv_time}** · "
-        f"💾 Saved to disk · No live fetch needed to view · "
-        f"Click 🔄 Update CSV to refresh"
-    )
+st.caption(
+    f"📅 CSV data from: **{live_time}** · "
+    f"Displaying from saved CSV — no live API call · "
+    f"Click 📥 Update CSV above to refresh data"
+)
