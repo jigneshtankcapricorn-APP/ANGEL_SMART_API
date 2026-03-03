@@ -358,7 +358,35 @@ with st.sidebar:
     st.divider()
     st.caption("🟢 STRONG ≤12% · 🟡 MOD 12–15% · 🟠 WATCH >15%")
 
-# ── Apply filters (instant — no API) ─────────────────────────────
+# ── FETCH FROM CSV BUTTON ────────────────────────────────────────
+st.markdown("#### 🔍 Fetch from CSV")
+fetch_col, fetch_info_col = st.columns([1.5, 4])
+with fetch_col:
+    fetch_btn = st.button(
+        "🔍 Fetch from CSV",
+        type="primary",
+        use_container_width=True,
+        help="Apply your sidebar filters and display matching stocks from saved CSV"
+    )
+with fetch_info_col:
+    st.markdown(
+        '<div style="background:#e3f2fd;border:1px solid #90caf9;border-radius:8px;'
+        'padding:10px 16px;color:#0d47a1;font-size:.9rem;">'
+        'Set your filters in the sidebar → click <b>🔍 Fetch from CSV</b> to display results'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+if not fetch_btn and not st.session_state.get("wl_fetched_once", False):
+    st.info("👈 Set your filters in the sidebar → click **🔍 Fetch from CSV** to see results.")
+    st.stop()
+
+if fetch_btn:
+    st.session_state["wl_fetched_once"] = True
+
+st.divider()
+
+# ── Apply filters (from CSV — no API call) ────────────────────────
 df_filtered = df_calc[
     (df_calc["pct_above_52w"] >= min_pct) &
     (df_calc["pct_above_52w"] <= max_pct)
