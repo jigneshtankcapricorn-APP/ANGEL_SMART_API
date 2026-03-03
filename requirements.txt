@@ -7,4 +7,3 @@ requests
 pandas
 pytz
 openpyxl
-streamlit-autorefresh

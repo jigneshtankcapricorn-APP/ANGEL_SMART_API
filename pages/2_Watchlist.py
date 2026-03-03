@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
+import os
 from datetime import datetime
 import pytz
 
@@ -12,80 +13,41 @@ from utils import data_store
 require_app_login()
 render_sidebar()
 
-# ─────────────────────────────────────────────────────────────────
-# FIX 1: AUTO-REFRESH TO KEEP CONNECTION ALIVE ON MOBILE
-# ─────────────────────────────────────────────────────────────────
-try:
-    from streamlit_autorefresh import st_autorefresh
-    
-    # Only auto-refresh when NOT actively scanning
-    if not st.session_state.get("wl_scanning", False):
-        st_autorefresh(
-            interval=120000,  # 2 minutes - keeps WebSocket alive
-            limit=None,
-            key="watchlist_keepalive"
-        )
-except ImportError:
-    pass  # Works without it too
-
-# ─────────────────────────────────────────────────────────────────
-# FIX 2: SMART CONNECTION CHECK + AUTO-RECONNECT
-# ─────────────────────────────────────────────────────────────────
-def ensure_connection():
-    """Check connection and auto-reconnect if dropped"""
-    
-    if not st.session_state.get("connected"):
-        st.warning("⚠️ Connection lost. Attempting to reconnect...")
-        
-        if check_session_alive():
-            st.success("✅ Reconnected successfully!")
-            return True
-        else:
-            # Try full reconnect with stored credentials
-            try:
-                if all(k in st.session_state for k in 
-                       ['api_key', 'username', 'pwd', 'totp_secret']):
-                    
-                    from SmartApi import SmartConnect
-                    import pyotp
-                    
-                    obj = SmartConnect(api_key=st.session_state['api_key'])
-                    totp = pyotp.TOTP(st.session_state['totp_secret']).now()
-                    
-                    data = obj.generateSession(
-                        st.session_state['username'],
-                        st.session_state['pwd'],
-                        totp
-                    )
-                    
-                    if data.get('status'):
-                        st.session_state['angel_obj'] = obj
-                        st.session_state['connected'] = True
-                        st.session_state['auth_token'] = data['data']['jwtToken']
-                        st.session_state['refresh_token'] = data['data']['refreshToken']
-                        st.session_state['feed_token'] = obj.getfeedToken()
-                        st.success("✅ Auto-reconnected!")
-                        return True
-                        
-            except Exception as e:
-                st.error(f"❌ Reconnection failed: {e}")
-            
-            st.error("❌ Please use 🔄 Reconnect in sidebar or login again.")
-            return False
-    
-    return True
-
-# ── Check connection ──────────────────────────────────────────────
-if not ensure_connection():
-    st.stop()
-
 from utils.angel_connect import (
     load_instrument_master, get_token,
     fetch_ltp, fetch_live_52w
 )
 from utils.indicators import compute_vol_ratio
 
-# ── Load stock universe ───────────────────────────────────────────
+# ── CSV paths — written automatically by the app, you never touch these ──
+WATCHLIST_CSV    = "data/watchlist_cache.csv"
+WATCHLIST_CSV_TS = "data/watchlist_cache_time.txt"
+
+def load_csv_cache():
+    """Load previously saved watchlist from disk. Returns DataFrame or empty."""
+    if os.path.exists(WATCHLIST_CSV):
+        try:
+            return pd.read_csv(WATCHLIST_CSV)
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+def save_csv_cache(df, timestamp):
+    """Save to CSV on disk — survives phone screen off / app switch / restart."""
+    os.makedirs("data", exist_ok=True)
+    df.to_csv(WATCHLIST_CSV, index=False)
+    with open(WATCHLIST_CSV_TS, "w") as f:
+        f.write(timestamp)
+
+def load_csv_timestamp():
+    if os.path.exists(WATCHLIST_CSV_TS):
+        try:
+            return open(WATCHLIST_CSV_TS).read().strip()
+        except Exception:
+            return ""
+    return ""
+
+# ── Load stock universe (your 2200+ stocks) ──────────────────────
 @st.cache_data(show_spinner=False)
 def load_stocks():
     return pd.read_csv("data/stocks_full.csv")
@@ -106,12 +68,8 @@ ss_init("wl_sectors",      [])
 ss_init("wl_batch_size",   200)
 ss_init("wl_batch_start",  1)
 ss_init("wl_timeout",      0.12)
-ss_init("wl_scanning",     False)
-ss_init("wl_scan_progress", 0)    # FIX 3: Track progress
 
-# ─────────────────────────────────────────────────────────────────
-# PAGE HEADER
-# ─────────────────────────────────────────────────────────────────
+# ── CSS ───────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 .page-title{font-size:1.8rem;font-weight:700;color:#1A73E8;margin-bottom:2px;}
@@ -120,61 +78,27 @@ st.markdown("""
               padding:10px 16px;color:#1b5e20;font-size:.9rem;margin-bottom:12px;}
 .warn-banner{background:#fff3cd;border:1px solid #ffc107;border-radius:8px;
              padding:10px 16px;color:#856404;font-size:.9rem;margin-bottom:12px;}
-.conn-status{background:#e3f2fd;border:1px solid #90caf9;border-radius:8px;
-             padding:8px 14px;color:#1565c0;font-size:.85rem;margin-bottom:10px;}
 </style>
 """, unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────────
-# FIX 4: CONNECTION STATUS BAR (visible on mobile)
-# ─────────────────────────────────────────────────────────────────
-ist_tz = pytz.timezone("Asia/Kolkata")
-now_ist = datetime.now(ist_tz)
-
-cs1, cs2, cs3 = st.columns(3)
-with cs1:
-    if st.session_state.get("connected"):
-        st.success("🟢 Connected")
-    else:
-        st.error("🔴 Disconnected")
-with cs2:
-    from datetime import time as dtime
-    is_market = (now_ist.weekday() < 5 and 
-                 dtime(9,15) <= now_ist.time() <= dtime(15,30))
-    if is_market:
-        st.success(f"📈 Market Open · {now_ist.strftime('%H:%M')}")
-    else:
-        st.warning(f"📉 Market Closed · {now_ist.strftime('%H:%M')}")
-with cs3:
-    last_check = st.session_state.get("last_conn_check", "N/A")
-    st.info(f"🔄 Last check: {last_check}")
 
 st.markdown('<div class="page-title">📋 Watchlist</div>', unsafe_allow_html=True)
 st.markdown(
     f'<div class="sub-caption">Universe: <b>{TOTAL:,} stocks</b> · '
-    f'<b>2,218 with sector</b> · <b>2,207 with market cap</b> · '
-    f'All prices fetched live from Angel One · Filters remembered across pages</div>',
+    f'Press <b>🔄 Update CSV</b> once before/after market · '
+    f'Data saved to CSV — safe on mobile, no background fetch needed</div>',
     unsafe_allow_html=True
 )
 
 # ─────────────────────────────────────────────────────────────────
-# SIDEBAR FILTERS (same as your original)
+# SIDEBAR FILTERS
 # ─────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ Scan Filters")
     st.divider()
 
     st.markdown("**📊 % Above 52W Low**")
-    min_pct = st.number_input(
-        "Min %", 0.0, 500.0,
-        value=st.session_state.wl_min_pct, step=0.5,
-        help="Stock must be AT LEAST this % above 52W low"
-    )
-    max_pct = st.number_input(
-        "Max %", 0.0, 500.0,
-        value=st.session_state.wl_max_pct, step=0.5,
-        help="Stock must be NO MORE than this % above 52W low"
-    )
+    min_pct = st.number_input("Min %", 0.0, 500.0, value=st.session_state.wl_min_pct, step=0.5)
+    max_pct = st.number_input("Max %", 0.0, 500.0, value=st.session_state.wl_max_pct, step=0.5)
     st.session_state.wl_min_pct = min_pct
     st.session_state.wl_max_pct = max_pct
 
@@ -190,7 +114,6 @@ with st.sidebar:
         options=all_sectors,
         default=st.session_state.wl_sectors,
         placeholder=f"All {len(all_sectors)} sectors",
-        help=f"{len(all_sectors)} unique sectors available"
     )
     st.session_state.wl_sectors = sector_filter
     if sector_filter:
@@ -199,32 +122,26 @@ with st.sidebar:
     st.divider()
 
     st.markdown("**💰 Market Cap (Crores ₹)**")
-    mcap_apply = st.checkbox(
-        "Enable Market Cap Filter",
-        value=st.session_state.wl_mcap_apply
-    )
+    mcap_apply = st.checkbox("Enable Market Cap Filter", value=st.session_state.wl_mcap_apply)
     st.session_state.wl_mcap_apply = mcap_apply
 
     if mcap_apply:
-        mcap_cat = st.selectbox(
-            "Quick Select",
-            ["Custom",
-             "Micro Cap (< ₹500 Cr)",
-             "Small Cap (₹500 – ₹5,000 Cr)",
-             "Mid Cap (₹5,000 – ₹20,000 Cr)",
-             "Large Cap (> ₹20,000 Cr)",
-             "All sizes"],
-        )
+        mcap_cat = st.selectbox("Quick Select", [
+            "Custom",
+            "Micro Cap (< ₹500 Cr)",
+            "Small Cap (₹500 – ₹5,000 Cr)",
+            "Mid Cap (₹5,000 – ₹20,000 Cr)",
+            "Large Cap (> ₹20,000 Cr)",
+            "All sizes"
+        ])
         if   mcap_cat == "Micro Cap (< ₹500 Cr)":         min_mcap = 0.0;     max_mcap = 500.0
         elif mcap_cat == "Small Cap (₹500 – ₹5,000 Cr)":  min_mcap = 500.0;   max_mcap = 5000.0
         elif mcap_cat == "Mid Cap (₹5,000 – ₹20,000 Cr)": min_mcap = 5000.0;  max_mcap = 20000.0
         elif mcap_cat == "Large Cap (> ₹20,000 Cr)":       min_mcap = 20000.0; max_mcap = 9999999.0
         elif mcap_cat == "All sizes":                       min_mcap = 0.0;     max_mcap = 9999999.0
         else:
-            min_mcap = st.number_input("Min Market Cap (Cr)", 0.0, 
-                                        value=st.session_state.wl_min_mcap, step=100.0)
-            max_mcap = st.number_input("Max Market Cap (Cr)", 0.0, 
-                                        value=9999999.0, step=1000.0)
+            min_mcap = st.number_input("Min Market Cap (Cr)", 0.0, value=st.session_state.wl_min_mcap, step=100.0)
+            max_mcap = st.number_input("Max Market Cap (Cr)", 0.0, value=9999999.0, step=1000.0)
         st.session_state.wl_min_mcap = min_mcap
         st.caption("⚠️ Market cap data for 2,207 of 2,242 stocks.")
     else:
@@ -242,7 +159,7 @@ with st.sidebar:
     batch_start = st.number_input(
         "Start from stock #", min_value=1, max_value=TOTAL,
         value=st.session_state.wl_batch_start, step=1,
-        help="Set this to resume after a timeout"
+        help="Resume from here if previous run stopped"
     )
     timeout_per = st.number_input(
         "Delay per stock (sec)", min_value=0.05, max_value=2.0,
@@ -256,36 +173,57 @@ with st.sidebar:
     st.caption("🟢 STRONG ≤12% · 🟡 MOD 12–15% · 🟠 WATCH >15%")
 
 # ─────────────────────────────────────────────────────────────────
-# BUTTONS + SAVED BANNER
+# LOAD WHAT'S ALREADY SAVED ON DISK
 # ─────────────────────────────────────────────────────────────────
-cached_df   = data_store.load("watchlist_df")
-cached_time = data_store.load("last_watchlist")
+csv_df   = load_csv_cache()
+csv_time = load_csv_timestamp()
 
-c_btn, c_clr, c_info = st.columns([1.2, 1, 3])
+# ─────────────────────────────────────────────────────────────────
+# BUTTONS ROW
+# ─────────────────────────────────────────────────────────────────
+connected = st.session_state.get("connected", False)
+
+c_btn, c_clr, c_info = st.columns([1.4, 1, 3])
+
 with c_btn:
-    run_btn = st.button("🔄 FETCH WATCHLIST", type="primary", 
-                         use_container_width=True)
+    run_btn = st.button(
+        "🔄 Update CSV",
+        type="primary",
+        use_container_width=True,
+        help="Fetch all 2200+ stocks from Angel One → auto-save to CSV. Press once before/after market."
+    )
 with c_clr:
-    clear_btn = st.button("🗑️ Clear Data", use_container_width=True)
+    clear_btn = st.button("🗑️ Clear CSV", use_container_width=True)
 with c_info:
-    if cached_time:
+    if not csv_df.empty and csv_time:
         st.markdown(
-            f'<div class="saved-banner">📦 Saved: <b>{cached_time}</b> · '
-            f'No auto-refresh · Click 🔄 to update manually</div>',
+            f'<div class="saved-banner">'
+            f'💾 CSV last updated: <b>{csv_time}</b> · '
+            f'<b>{len(csv_df)} stocks</b> saved · '
+            f'Displaying from CSV — no live fetch needed'
+            f'</div>',
             unsafe_allow_html=True
         )
     else:
         st.markdown(
-            '<div class="warn-banner">No data yet — set filters → '
-            'click 🔄 FETCH WATCHLIST</div>',
+            '<div class="warn-banner">'
+            '⚠️ No CSV saved yet — connect to Angel One → click <b>🔄 Update CSV</b> once'
+            '</div>',
             unsafe_allow_html=True
         )
 
 if clear_btn:
+    for f in [WATCHLIST_CSV, WATCHLIST_CSV_TS]:
+        if os.path.exists(f):
+            os.remove(f)
     data_store.clear("watchlist_df")
     data_store.clear("last_watchlist")
     st.session_state.pop("watchlist_data", None)
     st.rerun()
+
+if run_btn and not connected:
+    st.error("❌ Please Connect to Angel One from the sidebar first.")
+    st.stop()
 
 def get_status(pct):
     if pct <= 12: return "🟢 STRONG"
@@ -293,24 +231,17 @@ def get_status(pct):
     return "🟠 WATCH"
 
 # ─────────────────────────────────────────────────────────────────
-# FIX 5: FETCH WITH AUTO-SAVE + RECONNECT DURING SCAN
+# 🔄 UPDATE CSV — fetches ALL 2200+ stocks → saves automatically
 # ─────────────────────────────────────────────────────────────────
-if run_btn:
-    # Mark scanning active (disables auto-refresh)
-    st.session_state["wl_scanning"] = True
-    
+if run_btn and connected:
     if not check_session_alive():
-        # Try full reconnect
-        if not ensure_connection():
-            st.error("❌ Angel One session expired. Please reconnect.")
-            st.session_state["wl_scanning"] = False
-            st.stop()
-    
-    st.session_state["last_conn_check"] = now_ist.strftime('%H:%M:%S')
-    
+        st.error("❌ Angel One session expired. Please Reconnect from sidebar.")
+        st.stop()
+
     obj         = st.session_state.angel_obj
     instruments = load_instrument_master()
 
+    # Apply filters to the full 2200+ stock universe
     df_work = stocks_df.copy()
 
     if sector_filter:
@@ -319,15 +250,19 @@ if run_btn:
     if mcap_apply and min_mcap > 0:
         known   = df_work[df_work["market_cap_cr"] > 0]
         unknown = df_work[df_work["market_cap_cr"] == 0]
-        known   = known[(known["market_cap_cr"] >= min_mcap) & 
-                         (known["market_cap_cr"] <= max_mcap)]
+        known   = known[(known["market_cap_cr"] >= min_mcap) & (known["market_cap_cr"] <= max_mcap)]
         df_work = pd.concat([known, unknown], ignore_index=True)
 
+    # Batch slice (for resuming if it stopped mid-way)
     start_idx = batch_start - 1
     end_idx   = min(start_idx + batch_size, len(df_work))
     batch_df  = df_work.iloc[start_idx:end_idx].reset_index(drop=True)
 
-    st.divider()
+    st.info(
+        f"📡 Fetching stocks **#{batch_start} to #{end_idx}** of {len(df_work)} total · "
+        f"Will auto-save to CSV when done ✅"
+    )
+
     pc, sc = st.columns([3, 1])
     with pc:
         prog_bar  = st.progress(0)
@@ -335,13 +270,10 @@ if run_btn:
     with sc:
         stat_box = st.empty()
 
-    results        = []
-    skipped        = 0
-    errors         = 0
-    consecutive_errors = 0  # FIX 6: Track consecutive errors
-    scan_start     = time.time()
-    last_save_time = time.time()  # FIX 7: Periodic auto-save
-    SAVE_INTERVAL  = 30  # Save every 30 seconds
+    results    = []
+    skipped    = 0
+    errors     = 0
+    scan_start = time.time()
 
     for i, (_, row) in enumerate(batch_df.iterrows()):
         sym  = str(row["symbol"]).strip()
@@ -350,84 +282,14 @@ if run_btn:
 
         elapsed = time.time() - scan_start
         eta_sec = (elapsed / (i+1)) * (len(batch_df)-i-1) if i > 0 else 0
-        eta_str = (f"{int(eta_sec//60)}m {int(eta_sec%60)}s" 
-                   if eta_sec > 60 else f"{int(eta_sec)}s")
+        eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60)}s" if eta_sec > 60 else f"{int(eta_sec)}s"
 
         prog_bar.progress(pct_done)
         prog_text.markdown(
             f"**[{i+1}/{len(batch_df)}]** `{sym}` — {name}  \n"
-            f"⏱ {int(elapsed//60)}m{int(elapsed%60)}s elapsed · "
-            f"ETA: {eta_str} · ✅ {len(results)} found"
+            f"⏱ {int(elapsed//60)}m{int(elapsed%60)}s elapsed · ETA: {eta_str} · ✅ {len(results)} found"
         )
         stat_box.metric("✅ Found", len(results))
-
-        # ─────────────────────────────────────────────────────────
-        # FIX 8: PERIODIC AUTO-SAVE (protects against disconnection)
-        # ─────────────────────────────────────────────────────────
-        if time.time() - last_save_time > SAVE_INTERVAL and results:
-            temp_df = pd.DataFrame(results)
-            temp_df = temp_df.sort_values("% Above 52W").reset_index(drop=True)
-            
-            # Merge with previous data
-            prev = data_store.load("watchlist_df")
-            if (prev is not None and isinstance(prev, pd.DataFrame) 
-                    and not prev.empty and batch_start > 1):
-                temp_df = pd.concat([prev, temp_df], ignore_index=True)
-                temp_df = temp_df.drop_duplicates(subset=["Symbol"])
-                temp_df = temp_df.sort_values("% Above 52W").reset_index(drop=True)
-            
-            temp_ts = datetime.now(ist_tz).strftime("%d %b %Y %H:%M IST")
-            temp_ts += f" (auto-save · scanning {i+1}/{len(batch_df)})"
-            
-            data_store.save("watchlist_df", temp_df)
-            data_store.save("last_watchlist", temp_ts)
-            st.session_state["watchlist_data"] = temp_df
-            
-            last_save_time = time.time()
-            prog_text.markdown(
-                f"**[{i+1}/{len(batch_df)}]** `{sym}` — {name}  \n"
-                f"⏱ {int(elapsed//60)}m{int(elapsed%60)}s · "
-                f"ETA: {eta_str} · ✅ {len(results)} found · "
-                f"💾 **Auto-saved!**"
-            )
-
-        # ─────────────────────────────────────────────────────────
-        # FIX 9: CHECK CONNECTION EVERY 50 STOCKS
-        # ─────────────────────────────────────────────────────────
-        if i > 0 and i % 50 == 0:
-            try:
-                if not check_session_alive():
-                    st.warning("⚠️ Connection dropped. Reconnecting...")
-                    if ensure_connection():
-                        obj = st.session_state.angel_obj
-                        st.success("✅ Reconnected! Continuing scan...")
-                        consecutive_errors = 0
-                    else:
-                        # Save what we have and stop
-                        st.error("❌ Connection lost. Saving progress...")
-                        break
-            except Exception:
-                pass
-
-        # ─────────────────────────────────────────────────────────
-        # FIX 10: HANDLE CONSECUTIVE ERRORS (API rate limit / disconnect)
-        # ─────────────────────────────────────────────────────────
-        if consecutive_errors >= 10:
-            st.warning(
-                f"⚠️ 10 consecutive errors at stock #{i+1}. "
-                f"Pausing 5s and reconnecting..."
-            )
-            time.sleep(5)
-            
-            if ensure_connection():
-                obj = st.session_state.angel_obj
-                consecutive_errors = 0
-                st.success("✅ Reconnected after errors!")
-            else:
-                st.error("❌ Too many errors. Saving progress and stopping.")
-                # Save current batch start for resume
-                st.session_state.wl_batch_start = batch_start + i
-                break
 
         token = get_token(instruments, sym)
         if not token:
@@ -436,31 +298,19 @@ if run_btn:
 
         try:
             ltp = fetch_ltp(obj, "NSE", sym, token)
-            consecutive_errors = 0  # Reset on success
         except Exception:
-            errors += 1
-            consecutive_errors += 1
-            time.sleep(timeout_per * 2)  # Extra delay on error
-            continue
+            errors += 1; time.sleep(timeout_per); continue
 
         if not ltp or ltp == 0:
-            skipped += 1
-            time.sleep(0.05)
-            continue
+            skipped += 1; time.sleep(0.05); continue
 
         try:
             live52 = fetch_live_52w(obj, token, "NSE", days=365)
-            consecutive_errors = 0
         except Exception:
-            errors += 1
-            consecutive_errors += 1
-            time.sleep(timeout_per * 2)
-            continue
+            errors += 1; time.sleep(timeout_per); continue
 
         if not live52 or live52.get("w52_low", 0) == 0:
-            skipped += 1
-            time.sleep(0.05)
-            continue
+            skipped += 1; time.sleep(0.05); continue
 
         w52_low  = live52["w52_low"]
         w52_high = live52["w52_high"]
@@ -469,38 +319,30 @@ if run_btn:
         pct_ab   = ((ltp - w52_low) / w52_low * 100) if w52_low > 0 else 0
 
         if pct_ab < min_pct or pct_ab > max_pct:
-            time.sleep(timeout_per)
-            continue
+            time.sleep(timeout_per); continue
 
         vr, vl   = compute_vol_ratio(vol, avg_vol)
         mcap_val = float(row.get("market_cap_cr", 0))
-        sector   = str(row.get("sector", "Unknown")).strip()
-        if not sector:
-            sector = "Unknown"
+        sector   = str(row.get("sector", "Unknown")).strip() or "Unknown"
 
         results.append({
-            "Name":          name,
-            "Symbol":        sym,
-            "Sector":        sector,
-            "LTP":           round(ltp, 2),
-            "52W High":      round(w52_high, 2),
-            "52W Low":       round(w52_low, 2),
-            "% Above 52W":   round(pct_ab, 2),
-            "Mkt Cap (Cr)":  round(mcap_val, 2) if mcap_val > 0 else None,
-            "Volume":        int(vol),
-            "Avg Vol 20D":   int(avg_vol),
-            "Vol Ratio":     vl,
-            "_vr":           vr,
-            "Status":        get_status(pct_ab),
+            "Name":         name,
+            "Symbol":       sym,
+            "Sector":       sector,
+            "LTP":          round(ltp, 2),
+            "52W High":     round(w52_high, 2),
+            "52W Low":      round(w52_low, 2),
+            "% Above 52W":  round(pct_ab, 2),
+            "Mkt Cap (Cr)": round(mcap_val, 2) if mcap_val > 0 else None,
+            "Volume":       int(vol),
+            "Avg Vol 20D":  int(avg_vol),
+            "Vol Ratio":    vl,
+            "_vr":          vr,
+            "Status":       get_status(pct_ab),
         })
-        consecutive_errors = 0
         time.sleep(timeout_per)
 
-    # Scan complete - cleanup
-    st.session_state["wl_scanning"] = False
-    prog_bar.empty()
-    prog_text.empty()
-    stat_box.empty()
+    prog_bar.empty(); prog_text.empty(); stat_box.empty()
 
     df_r = pd.DataFrame(results) if results else pd.DataFrame()
     if not df_r.empty:
@@ -509,59 +351,68 @@ if run_btn:
     ist = pytz.timezone("Asia/Kolkata")
     ts  = datetime.now(ist).strftime("%d %b %Y %H:%M IST")
 
-    prev = data_store.load("watchlist_df")
-    if (prev is not None and isinstance(prev, pd.DataFrame)
-            and not prev.empty and batch_start > 1 and not df_r.empty):
-        df_r = pd.concat([prev, df_r], ignore_index=True)
-        df_r = df_r.drop_duplicates(subset=["Symbol"])
+    # Merge with previous batch if resuming
+    if not csv_df.empty and batch_start > 1 and not df_r.empty:
+        df_r = pd.concat([csv_df, df_r], ignore_index=True).drop_duplicates(subset=["Symbol"])
         df_r = df_r.sort_values("% Above 52W").reset_index(drop=True)
         ts   = f"{ts} (merged #{batch_start}–{end_idx})"
     elif not df_r.empty:
         ts   = f"{ts} (stocks {batch_start}–{end_idx} of {len(df_work)})"
 
-    save_df = df_r if not df_r.empty else pd.DataFrame()
-    data_store.save("watchlist_df",   save_df)
-    data_store.save("last_watchlist", ts)
-    st.session_state["watchlist_data"] = save_df
-    cached_df   = save_df
-    cached_time = ts
+    if not df_r.empty:
+        # ✅ AUTO SAVE TO CSV — you did nothing, app saved it automatically
+        save_csv_cache(df_r, ts)
+        data_store.save("watchlist_df",   df_r)
+        data_store.save("last_watchlist", ts)
+        st.session_state["watchlist_data"] = df_r
+        csv_df   = df_r
+        csv_time = ts
 
+    # Auto-advance batch start for next run
     next_start = end_idx + 1
-    st.session_state.wl_batch_start = (next_start 
-                                        if next_start <= len(df_work) else 1)
+    st.session_state.wl_batch_start = next_start if next_start <= len(df_work) else 1
 
     elapsed_total = time.time() - scan_start
     st.success(
         f"✅ Done in {int(elapsed_total//60)}m {int(elapsed_total%60)}s · "
-        f"**{len(save_df)} stocks matched** · {skipped} skipped · "
-        f"{errors} errors"
+        f"**{len(df_r) if not df_r.empty else 0} stocks matched** · "
+        f"{skipped} skipped · {errors} errors · "
+        f"💾 **CSV saved automatically!**"
     )
     if end_idx < len(df_work):
         st.info(
-            f"💡 Next batch: Start # auto-set to **{next_start}** — "
-            f"just click 🔄 again."
+            f"💡 Batch done. Next batch auto-set to **#{next_start}** — "
+            f"click 🔄 Update CSV again to continue."
         )
 
 # ─────────────────────────────────────────────────────────────────
-# DISPLAY (same as your original)
+# DISPLAY — reads from CSV (no live fetch needed)
 # ─────────────────────────────────────────────────────────────────
+# Prefer session state (freshly fetched) over CSV
 wl_s = st.session_state.get("watchlist_data")
 if wl_s is not None and isinstance(wl_s, pd.DataFrame) and not wl_s.empty:
     df_r = wl_s
-elif cached_df is not None and isinstance(cached_df, pd.DataFrame) and not cached_df.empty:
-    df_r = cached_df
+elif not csv_df.empty:
+    df_r = csv_df
+    # Sync to session + data_store so Signals page can use it
+    st.session_state["watchlist_data"] = csv_df
+    data_store.save("watchlist_df", csv_df)
 else:
     df_r = None
 
 if df_r is None or df_r.empty:
-    st.info("Set your filters → click **🔄 FETCH WATCHLIST**")
+    st.info(
+        "Connect to Angel One in sidebar → set your filters → "
+        "click **🔄 Update CSV** once before or after market hours."
+    )
     st.stop()
 
+# ── Summary metrics ───────────────────────────────────────────────
 st.divider()
 strong = int((df_r["Status"] == "🟢 STRONG").sum())
 mod    = int((df_r["Status"] == "🟡 MODERATE").sum())
 wtch   = int((df_r["Status"] == "🟠 WATCH").sum())
-vbk    = int((df_r["_vr"] >= 1.5).sum())
+vbk    = int((df_r["_vr"] >= 1.5).sum()) if "_vr" in df_r.columns else 0
 
 m1,m2,m3,m4,m5 = st.columns(5)
 m1.metric("Total Stocks",    len(df_r))
@@ -570,14 +421,16 @@ m3.metric("🟡 MODERATE",    mod)
 m4.metric("🟠 WATCH",       wtch)
 m5.metric("🔥 Vol Breakout", vbk)
 
-vb = df_r[df_r["_vr"] >= 1.5]
-if not vb.empty:
-    st.error("🔥 **VOLUME BREAKOUT:** " + "  ·  ".join(
-        f"{r['Symbol']} ({r['Vol Ratio']})" for _, r in vb.iterrows()
-    ))
+if "_vr" in df_r.columns:
+    vb = df_r[df_r["_vr"] >= 1.5]
+    if not vb.empty:
+        st.error("🔥 **VOLUME BREAKOUT:** " + "  ·  ".join(
+            f"{r['Symbol']} ({r['Vol Ratio']})" for _, r in vb.iterrows()
+        ))
 
 st.divider()
 
+# ── Display filters ───────────────────────────────────────────────
 fc1, fc2, fc3 = st.columns(3)
 with fc1:
     status_filter = st.multiselect(
@@ -586,19 +439,18 @@ with fc1:
         default=["🟢 STRONG","🟡 MODERATE","🟠 WATCH"]
     )
 with fc2:
-    available_sectors = (sorted(df_r["Sector"].dropna().unique().tolist()) 
-                         if "Sector" in df_r.columns else [])
-    sec_display = st.multiselect("Filter by Sector", available_sectors, 
-                                  default=[], placeholder="All sectors")
+    available_sectors = sorted(df_r["Sector"].dropna().unique().tolist()) if "Sector" in df_r.columns else []
+    sec_display = st.multiselect("Filter by Sector", available_sectors, default=[], placeholder="All sectors")
 with fc3:
     vol_only = st.checkbox("🔥 Volume Breakouts only", value=False)
 
 df_show = df_r[df_r["Status"].isin(status_filter)].copy()
 if sec_display:
     df_show = df_show[df_show["Sector"].isin(sec_display)]
-if vol_only:
+if vol_only and "_vr" in df_show.columns:
     df_show = df_show[df_show["_vr"] >= 1.5]
 
+# ── Styled table ──────────────────────────────────────────────────
 def cs(v):
     if "STRONG"   in str(v): return "background:#d4edda;color:#155724;font-weight:700"
     if "MODERATE" in str(v): return "background:#fff3cd;color:#856404;font-weight:700"
@@ -614,12 +466,10 @@ def cpct(v):
         if f <= 12: return "color:#155724;font-weight:600"
         if f <= 15: return "color:#856404"
         return "color:#7d4e00"
-    except:
-        return ""
+    except: return ""
 
 show = ["Name","Symbol","Sector","LTP","52W High","52W Low",
-        "% Above 52W","Mkt Cap (Cr)","Volume","Avg Vol 20D",
-        "Vol Ratio","Status"]
+        "% Above 52W","Mkt Cap (Cr)","Volume","Avg Vol 20D","Vol Ratio","Status"]
 show = [c for c in show if c in df_show.columns]
 
 fmt = {
@@ -644,11 +494,11 @@ else:
             .format(fmt, na_rep="—"))
         st.dataframe(styled, use_container_width=True, hide_index=True)
     except Exception:
-        st.dataframe(df_show[show], use_container_width=True, 
-                     hide_index=True)
+        st.dataframe(df_show[show], use_container_width=True, hide_index=True)
 
-if cached_time:
+if csv_time:
     st.caption(
-        f"📅 Data from: **{cached_time}** · "
-        f"No auto-refresh · Click 🔄 to update manually"
+        f"📅 CSV updated: **{csv_time}** · "
+        f"💾 Saved to disk · No live fetch needed to view · "
+        f"Click 🔄 Update CSV to refresh"
     )

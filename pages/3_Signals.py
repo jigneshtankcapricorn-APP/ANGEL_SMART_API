@@ -354,3 +354,100 @@ else:
 
 if cached_time:
     st.caption(f"📅 Data from: **{cached_time}** · No auto-refresh · Click 🔄 to update manually")
+
+# ─────────────────────────────────────────────────────────────────
+# 📌 SAVE TO MONITOR
+# ─────────────────────────────────────────────────────────────────
+import os
+
+MONITOR_CSV = "data/monitor_stocks.csv"
+
+st.divider()
+st.markdown("### 📌 Save Stocks to Monitor")
+st.caption(
+    "Select the stocks you want to observe for 8–15 days. "
+    "They will be saved permanently to the **📌 Monitor** page even if Watchlist or Signals change."
+)
+
+if not df_d.empty:
+    available_syms = df_show["Symbol"].tolist()
+
+    selected_syms = st.multiselect(
+        "☑️ Select stocks to save to Monitor",
+        options=available_syms,
+        default=[],
+        placeholder="Choose one or more symbols…",
+        help="Only stocks currently visible in the table above are shown here"
+    )
+
+    save_btn = st.button(
+        f"📌 Save {len(selected_syms)} Stock(s) to Monitor",
+        type="primary",
+        disabled=len(selected_syms) == 0
+    )
+
+    if save_btn and selected_syms:
+        # Load existing monitor data
+        if os.path.exists(MONITOR_CSV):
+            try:
+                existing = pd.read_csv(MONITOR_CSV)
+            except Exception:
+                existing = pd.DataFrame()
+        else:
+            existing = pd.DataFrame()
+
+        ist = pytz.timezone("Asia/Kolkata")
+        ts  = datetime.now(ist).strftime("%d %b %Y %H:%M IST")
+
+        new_rows = []
+        for sym in selected_syms:
+            row = df_show[df_show["Symbol"] == sym].iloc[0]
+
+            # Check if already in monitor
+            if not existing.empty and sym in existing["Symbol"].values:
+                continue  # skip duplicates
+
+            swing_high_val = row.get("Swing High", None)
+            try:
+                swing_high_val = float(swing_high_val) if swing_high_val not in [None, "—", ""] else None
+            except Exception:
+                swing_high_val = None
+
+            ema23_val = row.get("23-EMA", None)
+            try:
+                ema23_val = float(ema23_val) if ema23_val not in [None, "—", ""] else None
+            except Exception:
+                ema23_val = None
+
+            new_rows.append({
+                "Symbol":        sym,
+                "Sector":        row.get("Sector", "—"),
+                "SIGNAL":        row.get("SIGNAL", "—"),
+                "Entry_Price":   row.get("LTP", 0),
+                "Current_Price": row.get("LTP", 0),
+                "Days_Green":    row.get("Days Green", "—"),
+                "Flat":          row.get("Flat?", "—"),
+                "Swing_High":    swing_high_val,
+                "SH_Date":       row.get("SH Date", "—"),
+                "Breakout":      row.get("Breakout?", "—"),
+                "EMA23":         ema23_val,
+                "SL_5pct":       row.get("SL 5%", None),
+                "Rec_SL":        row.get("Rec SL", None),
+                "Risk_pct":      row.get("Risk %", None),
+                "Risk_Status":   row.get("Risk Status", "—"),
+                "Vol_Ratio":     row.get("Vol Ratio", "—"),
+                "Added_On":      ts,
+            })
+
+        if new_rows:
+            new_df  = pd.DataFrame(new_rows)
+            combined = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+            os.makedirs("data", exist_ok=True)
+            combined.to_csv(MONITOR_CSV, index=False)
+            st.success(
+                f"✅ **{len(new_rows)} stock(s) saved to Monitor!**  "
+                f"Go to **📌 Monitor** page to track them. "
+                f"{'(' + str(len(selected_syms) - len(new_rows)) + ' already existed, skipped)' if len(selected_syms) > len(new_rows) else ''}"
+            )
+        else:
+            st.warning("⚠️ All selected stocks are already in Monitor (no duplicates added).")
