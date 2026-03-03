@@ -183,6 +183,9 @@ if update_csv_btn:
     errors     = 0
     scan_start = time.time()
 
+    # Load existing CSV into working list so we can append incrementally
+    existing_records = live_df.to_dict("records") if not live_df.empty else []
+
     for i, (_, row) in enumerate(batch_df.iterrows()):
         sym  = str(row["symbol"]).strip()
         name = str(row["name"]).strip()
@@ -221,7 +224,7 @@ if update_csv_btn:
         if not live52 or live52.get("w52_low", 0) == 0:
             skipped += 1; time.sleep(0.05); continue
 
-        results.append({
+        record = {
             "symbol":        sym,
             "name":          name,
             "sector":        str(row.get("sector", "Unknown")).strip() or "Unknown",
@@ -231,31 +234,41 @@ if update_csv_btn:
             "w52_low":       round(live52["w52_low"], 2),
             "volume":        int(live52["ref_volume"]),
             "avg_vol_20d":   int(live52["avg_vol_20d"]),
-        })
+        }
+        results.append(record)
+
+        # ✅ SAVE TO CSV EVERY 50 STOCKS — data never lost if session dies
+        if len(results) % 50 == 0:
+            ist_now = pytz.timezone("Asia/Kolkata")
+            ts_now  = datetime.now(ist_now).strftime("%d %b %Y %H:%M IST")
+            all_records = existing_records + results
+            df_interim  = pd.DataFrame(all_records).drop_duplicates(subset=["symbol"])
+            save_live_csv(df_interim, f"{ts_now} · saving… {len(df_interim)} stocks so far")
+            prog_text.markdown(
+                f"**[{i+1}/{len(batch_df)}]** `{sym}` — {name}  \n"
+                f"⏱ {int(elapsed//60)}m{int(elapsed%60)}s · ETA: {eta_str} · "
+                f"✅ {len(results)} fetched · 💾 Auto-saved {len(df_interim)} to CSV"
+            )
+
         time.sleep(csv_timeout)
 
     prog_bar.empty(); prog_text.empty(); stat_box.empty()
 
-    df_new = pd.DataFrame(results) if results else pd.DataFrame()
-
     ist = pytz.timezone("Asia/Kolkata")
     ts  = datetime.now(ist).strftime("%d %b %Y %H:%M IST")
 
-    # Merge with previously saved CSV if resuming
-    if not live_df.empty and csv_batch_start > 1 and not df_new.empty:
-        df_merged = pd.concat([live_df, df_new], ignore_index=True).drop_duplicates(subset=["symbol"])
-        ts = f"{ts} · batch #{csv_batch_start}–{end_idx} merged"
-    elif not df_new.empty:
-        df_merged = df_new
-        ts = f"{ts} · stocks #{csv_batch_start}–{end_idx} of {TOTAL}"
-    else:
-        df_merged = live_df
-
-    if not df_merged.empty:
-        save_live_csv(df_merged, ts)
+    # Final save — merge everything
+    all_records = existing_records + results
+    if all_records:
+        df_merged = pd.DataFrame(all_records).drop_duplicates(subset=["symbol"])
+        df_merged = df_merged.sort_values("symbol").reset_index(drop=True)
+        ts_final  = f"{ts} · #{csv_batch_start}–{end_idx} of {TOTAL} · {len(df_merged)} total in CSV"
+        save_live_csv(df_merged, ts_final)
         live_df   = df_merged
-        live_time = ts
+        live_time = ts_final
         st.cache_data.clear()
+    else:
+        st.warning("⚠️ 0 stocks fetched in this batch — check Angel One connection or try smaller batch.")
 
     # Auto-advance batch start
     next_start = end_idx + 1
