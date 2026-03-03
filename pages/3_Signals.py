@@ -83,19 +83,56 @@ cached_df   = data_store.load("signals_df")
 cached_meta = data_store.load("signals_meta")
 cached_time = data_store.load("last_signals")
 
-col_btn, col_clr, col_info = st.columns([1.2, 1, 3])
+# ── Auto-resume: detect an interrupted scan ───────────────────────
+resume_idx  = data_store.load("signals_resume_idx")   # stock # where scan stopped
+resume_snap = data_store.load("signals_resume_snap")  # partial results saved so far
+
+if resume_idx and isinstance(resume_idx, int) and resume_idx > 1:
+    st.markdown(f"""
+    <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:10px;
+                padding:12px 18px;margin-bottom:12px;">
+      <b>⚡ Interrupted scan detected!</b><br>
+      Last scan stopped at stock <b>#{resume_idx}</b>
+      {"— <b>" + str(len(resume_snap)) + " signals</b> already collected and saved." if resume_snap else "."}
+      <br><span style="color:#856404;font-size:.87rem;">
+      Click <b>▶️ Resume from #{resume_idx}</b> to continue from where you left off,
+      or <b>🔄 RUN SIGNAL ANALYSIS</b> to start a fresh batch.</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+col_btn, col_res, col_clr, col_info = st.columns([1.2, 1.2, 0.9, 3])
 with col_btn:
     run_btn = st.button("🔄 RUN SIGNAL ANALYSIS", type="primary", use_container_width=True)
+with col_res:
+    resume_btn = st.button(
+        f"▶️ Resume from #{resume_idx}" if resume_idx else "▶️ Resume",
+        use_container_width=True,
+        disabled=not bool(resume_idx and resume_idx > 1),
+        help="Continue scan from the exact stock where it was interrupted",
+    )
 with col_clr:
-    clear_btn = st.button("🗑️ Clear Data", use_container_width=True)
+    clear_btn = st.button("🗑️ Clear", use_container_width=True)
 with col_info:
     if cached_time:
         st.markdown(f'<div class="saved-banner">📦 Saved data from <b>{cached_time}</b> — no auto-refresh. Click 🔄 to update manually.</div>', unsafe_allow_html=True)
+
+# Resume button: inject saved index into sidebar batch_start and trigger run
+if resume_btn and resume_idx:
+    st.session_state["_resume_override"] = resume_idx
+    st.rerun()
+
+# Apply resume override if set
+_resume_override = st.session_state.pop("_resume_override", None)
+if _resume_override:
+    batch_start = _resume_override
+    run_btn     = True   # treat as if user clicked Run
 
 if clear_btn:
     data_store.clear("signals_df")
     data_store.clear("signals_meta")
     data_store.clear("last_signals")
+    data_store.clear("signals_resume_idx")
+    data_store.clear("signals_resume_snap")
     st.session_state.pop("signals_data", None)
     st.rerun()
 
@@ -146,6 +183,20 @@ if run_btn:
     errors  = 0
     skipped = 0
 
+    # ── Load partial results from interrupted scan (if resuming) ──
+    if batch_start > 1:
+        snap = data_store.load("signals_resume_snap")
+        if snap and isinstance(snap, list):
+            results = snap
+            # Rebuild buy/watch/vol lists from snapshot so counts stay correct
+            for r in results:
+                tsym_snap = r.get("Symbol", "")
+                if r.get("SIGNAL") == "🟢 BUY":   buy_list.append(tsym_snap)
+                elif r.get("SIGNAL") == "⚪ WATCH": watch_list.append(tsym_snap)
+                if isinstance(r.get("_vr"), (int, float)) and r["_vr"] >= 1.5:
+                    high_vol.append(f"{tsym_snap}({r['_vr']:.1f}x)")
+            st.info(f"♻️ Loaded **{len(results)} signals** from previous interrupted scan — continuing scan…")
+
     prog      = st.progress(0)
     prog_col, stat_col = st.columns([3, 1])
     with prog_col:
@@ -184,6 +235,10 @@ if run_btn:
             ltp = fetch_ltp(obj, "NSE", tsym, token) or row.get("ref_ltp", 0)
         except Exception:
             errors += 1
+            # ── AUTO-SAVE checkpoint so resume works after network drop ──
+            data_store.save("signals_resume_idx", batch_start + i)
+            if results:
+                data_store.save("signals_resume_snap", results)
             time.sleep(timeout_per)
             continue
 
@@ -192,6 +247,10 @@ if run_btn:
             ohlc = fetch_historical_ohlc(obj, token, "NSE", days=40)
         except Exception:
             errors += 1
+            # ── AUTO-SAVE checkpoint so resume works after network drop ──
+            data_store.save("signals_resume_idx", batch_start + i)
+            if results:
+                data_store.save("signals_resume_snap", results)
             time.sleep(timeout_per)
             continue
 
@@ -246,11 +305,21 @@ if run_btn:
             "Risk Status": risk["risk_status"],
             "SIGNAL":      signal,
         })
+
+        # ── AUTO-SAVE every 5 stocks so a network drop loses nothing ──
+        if len(results) % 5 == 0:
+            data_store.save("signals_resume_idx",  batch_start + i)
+            data_store.save("signals_resume_snap", results)
+
         time.sleep(timeout_per)
 
     prog.empty()
     lbl.empty()
     stat_box.empty()
+
+    # ── Clear resume checkpoint — scan completed successfully ─────
+    data_store.clear("signals_resume_idx")
+    data_store.clear("signals_resume_snap")
 
     df_new = pd.DataFrame(results) if results else pd.DataFrame()
     ist    = pytz.timezone("Asia/Kolkata")
